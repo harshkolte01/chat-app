@@ -1,7 +1,11 @@
 import { redirect } from "next/navigation";
 import { getCurrentUserFromCookies } from "@/lib/auth/current-user";
 
-export default async function HomePage() {
+export async function requireAuthenticatedUser() {
   const user = await getCurrentUserFromCookies();
-  redirect(user ? "/chat" : "/login");
+  if (!user) {
+    redirect("/login");
+  }
+
+  return user;
 }

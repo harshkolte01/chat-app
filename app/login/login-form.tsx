@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 
@@ -125,13 +124,6 @@ export function LoginForm() {
                 {submitting ? "Signing in..." : "Sign in"}
               </button>
             </form>
-
-            <p className="mt-5 text-sm text-black/70">
-              New here?{" "}
-              <Link href="/signup" className="font-semibold text-black underline decoration-black/70">
-                Create an account
-              </Link>
-            </p>
           </div>
         </div>
       </section>

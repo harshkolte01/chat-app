@@ -78,11 +78,120 @@ type SocketClient = Socket<ServerToClientEvents, ClientToServerEvents>;
 
 const SOCKET_ACK_TIMEOUT_MS = 8_000;
 const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024;
+const POLL_MESSAGES_INTERVAL_MS = 2_500;
+const POLL_CONVERSATIONS_INTERVAL_MS = 12_000;
+const POLL_BACKOFF_MAX_MS = 60_000;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function isUuid(value: string): boolean {
   return UUID_PATTERN.test(value);
+}
+
+function safeDecodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+function encodeObjectKeyForProxy(objectKey: string): string {
+  return objectKey
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+}
+
+function extractObjectKeyFromPathname(pathname: string): string | null {
+  const pathSegments = pathname
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => safeDecodeSegment(segment));
+  const objectStart = pathSegments.findIndex((segment) => segment === "chat-images");
+  if (objectStart < 0) {
+    return null;
+  }
+
+  return pathSegments.slice(objectStart).join("/");
+}
+
+function normalizeMessageImageUrl(imageKey: string): string {
+  const trimmed = imageKey.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+
+  if (trimmed.startsWith("/api/uploads/object/")) {
+    return trimmed;
+  }
+
+  if (trimmed.startsWith("chat-images/")) {
+    return `/api/uploads/object/${encodeObjectKeyForProxy(trimmed)}`;
+  }
+
+  if (trimmed.startsWith("/")) {
+    const objectKey = extractObjectKeyFromPathname(trimmed);
+    if (objectKey) {
+      return `/api/uploads/object/${encodeObjectKeyForProxy(objectKey)}`;
+    }
+    return trimmed;
+  }
+
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    try {
+      const parsed = new URL(trimmed);
+
+      if (parsed.pathname.startsWith("/api/uploads/object/")) {
+        return parsed.pathname;
+      }
+
+      const objectKey = extractObjectKeyFromPathname(parsed.pathname);
+      if (objectKey) {
+        return `/api/uploads/object/${encodeObjectKeyForProxy(objectKey)}`;
+      }
+    } catch {
+      return trimmed;
+    }
+  }
+
+  return trimmed;
+}
+
+function shouldDisableRealtimeSocket(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return window.location.hostname.toLowerCase().endsWith(".vercel.app");
+}
+
+function sortMessagesNewestFirst(messages: Message[]): Message[] {
+  return [...messages].sort((left, right) => {
+    const timeDiff = new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+    if (timeDiff !== 0) {
+      return timeDiff;
+    }
+
+    return right.id.localeCompare(left.id);
+  });
+}
+
+function mergeLatestMessages(previous: Message[], latest: Message[]): Message[] {
+  if (previous.length === 0) {
+    return latest;
+  }
+
+  const byId = new Map<string, Message>();
+  for (const message of previous) {
+    byId.set(message.id, message);
+  }
+  for (const message of latest) {
+    byId.set(message.id, message);
+  }
+
+  return sortMessagesNewestFirst([...byId.values()]);
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -284,6 +393,12 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   const [loadingDirectoryUsers, setLoadingDirectoryUsers] = useState(false);
   const [creatingConversation, setCreatingConversation] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isPageVisible, setIsPageVisible] = useState(
+    () => (typeof document === "undefined" ? true : document.visibilityState === "visible"),
+  );
+  const [isBrowserOnline, setIsBrowserOnline] = useState(
+    () => (typeof navigator === "undefined" ? true : navigator.onLine),
+  );
 
   const selectedConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
@@ -291,10 +406,20 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   );
   const displayedMessages = useMemo(() => [...messages].reverse(), [messages]);
   const newestMessageId = messages[0]?.id ?? null;
+  const realtimeStatus = socketConnected
+    ? "connected"
+    : isBrowserOnline
+      ? isPageVisible
+        ? "polling fallback active"
+        : "paused (tab hidden)"
+      : "offline";
 
-  const loadConversations = useCallback(async () => {
-    setLoadingConversations(true);
-    setError(null);
+  const loadConversations = useCallback(async (options: { silent?: boolean } = {}) => {
+    const silent = options.silent === true;
+    if (!silent) {
+      setLoadingConversations(true);
+      setError(null);
+    }
 
     try {
       const data = await fetchJson<ConversationsResponse>("/api/conversations");
@@ -317,10 +442,17 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
 
         return selectedStillExists ? previousSelectedConversationId : data.conversations[0].id;
       });
+      return data.conversations;
     } catch (loadError) {
+      if (silent) {
+        throw loadError;
+      }
       setError(loadError instanceof Error ? loadError.message : "Failed to load conversations.");
+      return [];
     } finally {
-      setLoadingConversations(false);
+      if (!silent) {
+        setLoadingConversations(false);
+      }
     }
   }, []);
 
@@ -346,25 +478,52 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     }
   }, []);
 
-  const loadMessages = useCallback(async (conversationId: string, cursor: string | null = null) => {
-    setLoadingMessages(true);
-    setError(null);
-
-    try {
-      const query = new URLSearchParams({ conversationId });
-      if (cursor) {
-        query.set("cursor", cursor);
+  const loadMessages = useCallback(
+    async (
+      conversationId: string,
+      cursor: string | null = null,
+      options: { silent?: boolean } = {},
+    ) => {
+      const silent = options.silent === true;
+      if (!silent) {
+        setLoadingMessages(true);
+        setError(null);
       }
 
-      const data = await fetchJson<MessagesResponse>(`/api/messages?${query.toString()}`);
-      setMessages((previous) => (cursor ? [...previous, ...data.messages] : data.messages));
-      setNextCursor(data.nextCursor);
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Failed to load messages.");
-    } finally {
-      setLoadingMessages(false);
-    }
-  }, []);
+      try {
+        const query = new URLSearchParams({ conversationId });
+        if (cursor) {
+          query.set("cursor", cursor);
+        }
+
+        const data = await fetchJson<MessagesResponse>(`/api/messages?${query.toString()}`);
+        setMessages((previous) => {
+          if (cursor) {
+            return [...previous, ...data.messages];
+          }
+
+          if (silent) {
+            return mergeLatestMessages(previous, data.messages);
+          }
+
+          return data.messages;
+        });
+        setNextCursor(data.nextCursor);
+        return data.messages;
+      } catch (loadError) {
+        if (silent) {
+          throw loadError;
+        }
+        setError(loadError instanceof Error ? loadError.message : "Failed to load messages.");
+        return [];
+      } finally {
+        if (!silent) {
+          setLoadingMessages(false);
+        }
+      }
+    },
+    [],
+  );
 
   async function sendViaRestFallback(payload: {
     conversationId: string;
@@ -732,6 +891,32 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   }, [selectedConversationId]);
 
   useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") {
+      return;
+    }
+
+    const handleVisibilityChange = () => {
+      setIsPageVisible(document.visibilityState === "visible");
+    };
+    const handleOnline = () => {
+      setIsBrowserOnline(true);
+    };
+    const handleOffline = () => {
+      setIsBrowserOnline(false);
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  useEffect(() => {
     void loadConversations();
   }, [loadConversations]);
 
@@ -752,6 +937,119 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
 
     void loadMessages(selectedConversationId);
   }, [loadMessages, selectedConversationId]);
+
+  useEffect(() => {
+    if (socketConnected) {
+      return;
+    }
+
+    let canceled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let failureCount = 0;
+
+    const schedule = (delayMs: number) => {
+      if (canceled) {
+        return;
+      }
+
+      timer = setTimeout(() => {
+        void tick();
+      }, delayMs);
+    };
+
+    const nextBackoffDelay = () =>
+      Math.min(POLL_BACKOFF_MAX_MS, POLL_CONVERSATIONS_INTERVAL_MS * 2 ** Math.min(failureCount, 4));
+
+    const tick = async () => {
+      if (canceled) {
+        return;
+      }
+
+      if (!isBrowserOnline || !isPageVisible || cameraOpen) {
+        schedule(POLL_CONVERSATIONS_INTERVAL_MS);
+        return;
+      }
+
+      try {
+        await loadConversations({ silent: true });
+        failureCount = 0;
+        schedule(POLL_CONVERSATIONS_INTERVAL_MS);
+      } catch {
+        failureCount += 1;
+        schedule(nextBackoffDelay());
+      }
+    };
+
+    schedule(900);
+
+    return () => {
+      canceled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [cameraOpen, isBrowserOnline, isPageVisible, loadConversations, socketConnected]);
+
+  useEffect(() => {
+    if (socketConnected || !selectedConversationId) {
+      return;
+    }
+
+    let canceled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let failureCount = 0;
+
+    const schedule = (delayMs: number) => {
+      if (canceled) {
+        return;
+      }
+
+      timer = setTimeout(() => {
+        void tick();
+      }, delayMs);
+    };
+
+    const nextBackoffDelay = () =>
+      Math.min(POLL_BACKOFF_MAX_MS, POLL_MESSAGES_INTERVAL_MS * 2 ** Math.min(failureCount, 4));
+
+    const tick = async () => {
+      if (canceled) {
+        return;
+      }
+
+      if (!isBrowserOnline || !isPageVisible || cameraOpen || sendingMessage || uploadingImage) {
+        schedule(POLL_MESSAGES_INTERVAL_MS);
+        return;
+      }
+
+      try {
+        await loadMessages(selectedConversationId, null, { silent: true });
+        failureCount = 0;
+        schedule(POLL_MESSAGES_INTERVAL_MS);
+      } catch {
+        failureCount += 1;
+        schedule(nextBackoffDelay());
+      }
+    };
+
+    schedule(600);
+
+    return () => {
+      canceled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [
+    cameraOpen,
+    isBrowserOnline,
+    isPageVisible,
+    loadMessages,
+    selectedConversationId,
+    sendingMessage,
+    socketConnected,
+    uploadingImage,
+  ]);
 
   useEffect(() => {
     if (!cameraOpen || !cameraStreamRef.current || !cameraVideoRef.current) {
@@ -817,6 +1115,11 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     let mounted = true;
 
     async function initSocket() {
+      if (shouldDisableRealtimeSocket()) {
+        setSocketConnected(false);
+        return;
+      }
+
       try {
         await fetchJson<{ ok: boolean }>("/api/socket", {
           method: "GET",
@@ -831,6 +1134,8 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
           path: "/api/socket/io",
           withCredentials: true,
           transports: ["websocket", "polling"],
+          reconnectionAttempts: 3,
+          timeout: 5_000,
         });
         socketRef.current = socket;
 
@@ -842,9 +1147,8 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
           setSocketConnected(false);
         });
 
-        socket.on("connect_error", (connectError) => {
+        socket.on("connect_error", () => {
           setSocketConnected(false);
-          setError(connectError.message || "Realtime connection failed.");
         });
 
         socket.on("chat:new_message", (payload) => {
@@ -875,8 +1179,8 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
           setMessages((previous) => updateMessageStatusLocally(previous, payload));
           setConversations((previous) => updateConversationStatusLocally(previous, payload));
         });
-      } catch (socketInitError) {
-        setError(socketInitError instanceof Error ? socketInitError.message : "Socket setup failed.");
+      } catch {
+        setSocketConnected(false);
       }
     }
 
@@ -944,7 +1248,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
               Signed in as {currentUser.username} ({currentUser.email})
             </p>
             <p className="text-xs font-medium uppercase tracking-wide text-black/55">
-              Realtime: {socketConnected ? "connected" : "disconnected (REST fallback active)"}
+              Realtime: {realtimeStatus}
             </p>
           </div>
           <button
@@ -1087,6 +1391,10 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
 
               {displayedMessages.map((message) => {
                 const isCurrentUser = message.senderId === currentUser.id;
+                const normalizedImageUrl =
+                  message.type === "IMAGE" && message.imageKey
+                    ? normalizeMessageImageUrl(message.imageKey)
+                    : null;
 
                 return (
                   <div
@@ -1100,11 +1408,11 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
                     <p className="mb-1 text-xs font-medium opacity-80">
                       {message.sender.username} | {message.status}
                     </p>
-                    {message.type === "IMAGE" && message.imageKey ? (
-                      <a href={message.imageKey} target="_blank" rel="noopener noreferrer">
+                    {message.type === "IMAGE" && normalizedImageUrl ? (
+                      <a href={normalizedImageUrl} target="_blank" rel="noopener noreferrer">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
-                          src={message.imageKey}
+                          src={normalizedImageUrl}
                           alt="Chat upload"
                           className="max-h-64 w-auto max-w-full rounded-lg object-cover"
                           loading="lazy"

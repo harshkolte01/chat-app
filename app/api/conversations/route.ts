@@ -110,10 +110,7 @@ export async function GET(request: NextRequest) {
               senderId: lastMessage.senderId,
               type: lastMessage.type,
               status: lastMessage.status,
-              textPreview:
-                lastMessage.type === "TEXT"
-                  ? (lastMessage.text ?? "")
-                  : (lastMessage.imageKey ?? "[image]"),
+              textPreview: lastMessage.type === "TEXT" ? (lastMessage.text ?? "") : "[image]",
               createdAt: lastMessage.createdAt.toISOString(),
             }
           : null,

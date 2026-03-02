@@ -7,9 +7,12 @@ import { prisma } from "@/lib/db";
 type SendMessageBody = {
   conversationId?: string;
   text?: string;
+  imageUrl?: string;
+  imageKey?: string;
 };
 
 const MAX_TEXT_LENGTH = 4000;
+const MAX_IMAGE_REF_LENGTH = 4000;
 
 export async function POST(request: NextRequest) {
   const currentUser = await getCurrentUserFromRequest(request);
@@ -24,16 +27,35 @@ export async function POST(request: NextRequest) {
 
   const conversationId = body.conversationId?.trim();
   const text = body.text?.trim() ?? "";
+  const imageRef = body.imageUrl?.trim() || body.imageKey?.trim() || "";
 
-  if (!conversationId || !text) {
-    return fail(400, "MISSING_FIELDS", "conversationId and text are required.");
+  if (!conversationId) {
+    return fail(400, "MISSING_FIELDS", "conversationId is required.");
   }
 
-  if (text.length > MAX_TEXT_LENGTH) {
+  const hasText = text.length > 0;
+  const hasImage = imageRef.length > 0;
+  if (hasText === hasImage) {
+    return fail(
+      400,
+      "INVALID_MESSAGE_PAYLOAD",
+      "Provide exactly one of text or imageUrl/imageKey.",
+    );
+  }
+
+  if (hasText && text.length > MAX_TEXT_LENGTH) {
     return fail(
       400,
       "MESSAGE_TOO_LONG",
       `Message text must be at most ${MAX_TEXT_LENGTH} characters.`,
+    );
+  }
+
+  if (hasImage && imageRef.length > MAX_IMAGE_REF_LENGTH) {
+    return fail(
+      400,
+      "IMAGE_REF_TOO_LONG",
+      `imageUrl/imageKey must be at most ${MAX_IMAGE_REF_LENGTH} characters.`,
     );
   }
 
@@ -47,8 +69,9 @@ export async function POST(request: NextRequest) {
     data: {
       conversationId,
       senderId: currentUser.id,
-      type: "TEXT",
-      text,
+      type: hasText ? "TEXT" : "IMAGE",
+      text: hasText ? text : null,
+      imageKey: hasImage ? imageRef : null,
     },
     select: {
       id: true,

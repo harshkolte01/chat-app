@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
 import { PublicUser } from "@/lib/auth/current-user";
@@ -64,9 +64,20 @@ type CreateConversationResponse = {
   created: boolean;
 };
 
+type PresignUploadResponse = {
+  uploadUrl: string;
+  fileUrl: string;
+  objectKey: string;
+  expiresIn: number;
+  public: boolean;
+};
+
+type CameraFacingMode = "user" | "environment";
+
 type SocketClient = Socket<ServerToClientEvents, ClientToServerEvents>;
 
 const SOCKET_ACK_TIMEOUT_MS = 8_000;
+const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -143,7 +154,7 @@ function messagePreview(message: SocketMessage | Message): string {
   if (message.type === "TEXT") {
     return message.text ?? "";
   }
-  return message.imageKey ?? "[image]";
+  return "[image]";
 }
 
 function updateConversationPreview(
@@ -249,6 +260,9 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   const selectedConversationIdRef = useRef<string | null>(null);
   const lastReadEventRef = useRef<string | null>(null);
   const messageScrollRef = useRef<HTMLDivElement | null>(null);
+  const imagePickerInputRef = useRef<HTMLInputElement | null>(null);
+  const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
@@ -258,6 +272,11 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   const [loadingConversations, setLoadingConversations] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraStarting, setCameraStarting] = useState(false);
+  const [cameraFacingMode, setCameraFacingMode] = useState<CameraFacingMode>("environment");
+  const [messagePanelFullscreen, setMessagePanelFullscreen] = useState(false);
   const [socketConnected, setSocketConnected] = useState(false);
   const [directoryUsers, setDirectoryUsers] = useState<PublicUser[]>([]);
   const [directoryQuery, setDirectoryQuery] = useState("");
@@ -347,16 +366,17 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     }
   }, []);
 
-  async function sendViaRestFallback(conversationId: string, text: string) {
+  async function sendViaRestFallback(payload: {
+    conversationId: string;
+    text?: string;
+    imageUrl?: string;
+  }) {
     const response = await fetchJson<SendMessageResponse>("/api/messages/send", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        conversationId,
-        text,
-      }),
+      body: JSON.stringify(payload),
     });
 
     return toMessageFromSendResponse(response);
@@ -406,10 +426,16 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
         if (ack.ok && ack.data) {
           storedMessage = toMessageFromSocketAck(ack.data);
         } else {
-          storedMessage = await sendViaRestFallback(conversationId, text);
+          storedMessage = await sendViaRestFallback({
+            conversationId,
+            text,
+          });
         }
       } else {
-        storedMessage = await sendViaRestFallback(conversationId, text);
+        storedMessage = await sendViaRestFallback({
+          conversationId,
+          text,
+        });
       }
 
       setMessages((previous) =>
@@ -423,6 +449,234 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     } finally {
       setSendingMessage(false);
     }
+  }
+
+  async function uploadImageToObjectStore(file: File, contentType: string): Promise<string> {
+    const presign = await fetchJson<PresignUploadResponse>("/api/uploads/presign", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        filename: file.name,
+        contentType,
+      }),
+    });
+
+    const uploadResponse = await fetch(presign.uploadUrl, {
+      method: "PUT",
+      headers: {
+        "Content-Type": contentType,
+      },
+      body: file,
+    });
+
+    if (!uploadResponse.ok) {
+      throw new Error("Image upload failed.");
+    }
+
+    return presign.fileUrl;
+  }
+
+  async function sendImageMessage(conversationId: string, imageUrl: string) {
+    const clientMessageId = `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const optimisticMessage: Message = {
+      id: clientMessageId,
+      conversationId,
+      senderId: currentUser.id,
+      sender: currentUser,
+      type: "IMAGE",
+      text: null,
+      imageKey: imageUrl,
+      status: "SENT",
+      createdAt: new Date().toISOString(),
+    };
+
+    setMessages((previous) => [optimisticMessage, ...previous]);
+    setConversations((previous) => updateConversationPreview(previous, optimisticMessage));
+
+    try {
+      const socket = socketRef.current;
+      let storedMessage: Message;
+
+      if (socket && socket.connected) {
+        const ack = await emitSendMessageWithAck(socket, {
+          conversationId,
+          type: "image",
+          imageKey: imageUrl,
+          clientMessageId,
+        });
+
+        if (ack.ok && ack.data) {
+          storedMessage = toMessageFromSocketAck(ack.data);
+        } else {
+          storedMessage = await sendViaRestFallback({
+            conversationId,
+            imageUrl,
+          });
+        }
+      } else {
+        storedMessage = await sendViaRestFallback({
+          conversationId,
+          imageUrl,
+        });
+      }
+
+      setMessages((previous) =>
+        previous.map((message) => (message.id === clientMessageId ? storedMessage : message)),
+      );
+      setConversations((previous) => updateConversationPreview(previous, storedMessage));
+    } catch (sendError) {
+      setMessages((previous) => previous.filter((message) => message.id !== clientMessageId));
+      throw sendError;
+    }
+  }
+
+  async function processImageFile(file: File) {
+    const conversationId = selectedConversationId;
+    if (!file || !conversationId || uploadingImage || sendingMessage) {
+      return;
+    }
+
+    const contentType = file.type?.trim() || "image/jpeg";
+    if (!contentType.startsWith("image/")) {
+      setError("Please choose an image file.");
+      return;
+    }
+
+    if (file.size > MAX_UPLOAD_SIZE_BYTES) {
+      setError("Image must be smaller than 10 MB.");
+      return;
+    }
+
+    setUploadingImage(true);
+    setError(null);
+
+    try {
+      const imageUrl = await uploadImageToObjectStore(file, contentType);
+      await sendImageMessage(conversationId, imageUrl);
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "Failed to upload image.");
+    } finally {
+      setUploadingImage(false);
+    }
+  }
+
+  function stopCameraStream() {
+    if (cameraStreamRef.current) {
+      for (const track of cameraStreamRef.current.getTracks()) {
+        track.stop();
+      }
+      cameraStreamRef.current = null;
+    }
+
+    if (cameraVideoRef.current) {
+      cameraVideoRef.current.srcObject = null;
+    }
+  }
+
+  function closeCameraModal() {
+    stopCameraStream();
+    setCameraOpen(false);
+  }
+
+  async function openCameraModal(preferredFacingMode: CameraFacingMode = cameraFacingMode) {
+    if (!selectedConversationId || uploadingImage || sendingMessage || cameraStarting) {
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError("Camera is not supported in this browser.");
+      return;
+    }
+
+    setCameraStarting(true);
+    setError(null);
+    stopCameraStream();
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: preferredFacingMode },
+        },
+        audio: false,
+      });
+
+      cameraStreamRef.current = stream;
+      setCameraFacingMode(preferredFacingMode);
+      setCameraOpen(true);
+
+      if (cameraVideoRef.current) {
+        cameraVideoRef.current.srcObject = stream;
+        await cameraVideoRef.current.play().catch(() => undefined);
+      }
+    } catch (cameraError) {
+      setCameraOpen(false);
+      stopCameraStream();
+
+      if (cameraError instanceof DOMException && cameraError.name === "NotAllowedError") {
+        setError("Camera permission denied. Please allow camera access.");
+        return;
+      }
+
+      if (cameraError instanceof DOMException && cameraError.name === "NotFoundError") {
+        setError("No camera device found.");
+        return;
+      }
+
+      setError("Unable to access camera.");
+    } finally {
+      setCameraStarting(false);
+    }
+  }
+
+  async function switchCameraFacingMode() {
+    const nextFacingMode: CameraFacingMode = cameraFacingMode === "environment" ? "user" : "environment";
+    await openCameraModal(nextFacingMode);
+  }
+
+  async function captureFromCamera() {
+    const video = cameraVideoRef.current;
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
+      setError("Camera is not ready yet. Please try again.");
+      return;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      setError("Unable to capture image from camera.");
+      return;
+    }
+
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, "image/jpeg", 0.92);
+    });
+
+    if (!blob) {
+      setError("Unable to capture image from camera.");
+      return;
+    }
+
+    const capturedFile = new File([blob], `camera-${Date.now()}.jpg`, {
+      type: "image/jpeg",
+    });
+
+    closeCameraModal();
+    await processImageFile(capturedFile);
+  }
+
+  async function onImageSelected(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+
+    await processImageFile(file);
   }
 
   async function onStartConversation(event: FormEvent<HTMLFormElement>) {
@@ -498,6 +752,66 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
 
     void loadMessages(selectedConversationId);
   }, [loadMessages, selectedConversationId]);
+
+  useEffect(() => {
+    if (!cameraOpen || !cameraStreamRef.current || !cameraVideoRef.current) {
+      return;
+    }
+
+    cameraVideoRef.current.srcObject = cameraStreamRef.current;
+    void cameraVideoRef.current.play().catch(() => undefined);
+  }, [cameraFacingMode, cameraOpen]);
+
+  useEffect(() => {
+    if (selectedConversationId || !cameraOpen) {
+      return;
+    }
+
+    if (cameraStreamRef.current) {
+      for (const track of cameraStreamRef.current.getTracks()) {
+        track.stop();
+      }
+      cameraStreamRef.current = null;
+    }
+
+    if (cameraVideoRef.current) {
+      cameraVideoRef.current.srcObject = null;
+    }
+
+    setCameraOpen(false);
+  }, [cameraOpen, selectedConversationId]);
+
+  useEffect(() => {
+    return () => {
+      if (cameraStreamRef.current) {
+        for (const track of cameraStreamRef.current.getTracks()) {
+          track.stop();
+        }
+        cameraStreamRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!messagePanelFullscreen) {
+      return;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMessagePanelFullscreen(false);
+      }
+    };
+
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [messagePanelFullscreen]);
 
   useEffect(() => {
     let mounted = true;
@@ -619,7 +933,11 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   return (
     <div className="h-screen overflow-hidden px-3 py-4 sm:px-5 sm:py-6 lg:px-8 lg:py-8">
       <div className="mx-auto flex h-full w-full max-w-7xl flex-col gap-4 overflow-hidden">
-        <header className="flex flex-col gap-3 rounded-2xl border border-stone-200 bg-white px-4 py-4 shadow-[0_14px_34px_rgba(17,17,17,0.06)] sm:flex-row sm:items-start sm:justify-between sm:px-5">
+        <header
+          className={`flex flex-col gap-3 rounded-2xl border border-stone-200 bg-white px-4 py-4 shadow-[0_14px_34px_rgba(17,17,17,0.06)] sm:flex-row sm:items-start sm:justify-between sm:px-5 ${
+            messagePanelFullscreen ? "hidden" : ""
+          }`}
+        >
           <div>
             <h1 className="text-2xl font-semibold text-black">Chat Workspace</h1>
             <p className="text-sm text-black/70">
@@ -644,8 +962,15 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
           </div>
         ) : null}
 
-        <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
-          <aside className="flex min-h-0 flex-col rounded-2xl border border-stone-200 bg-white p-4 shadow-[0_14px_34px_rgba(17,17,17,0.05)]">
+        <div
+          className={
+            messagePanelFullscreen
+              ? "min-h-0 flex-1"
+              : "grid min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[320px_minmax(0,1fr)]"
+          }
+        >
+          {!messagePanelFullscreen ? (
+            <aside className="flex min-h-0 flex-col rounded-2xl border border-stone-200 bg-white p-4 shadow-[0_14px_34px_rgba(17,17,17,0.05)]">
             <div className="mb-4 rounded-xl border border-stone-200 bg-stone-50 p-3">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-black">
                 Start private chat
@@ -718,15 +1043,27 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
                 </button>
               ))}
             </div>
-          </aside>
+            </aside>
+          ) : null}
 
-          <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-stone-200 bg-white p-4 shadow-[0_14px_34px_rgba(17,17,17,0.05)] sm:p-5">
-            <div className="mb-3 border-b border-stone-200 pb-3">
+          <section
+            className={`flex min-h-0 flex-col overflow-hidden rounded-2xl border border-stone-200 bg-white p-4 shadow-[0_14px_34px_rgba(17,17,17,0.05)] sm:p-5 ${
+              messagePanelFullscreen ? "fixed inset-2 z-40 sm:inset-4" : ""
+            }`}
+          >
+            <div className="mb-3 flex items-center justify-between gap-3 border-b border-stone-200 pb-3">
               <h2 className="text-lg font-semibold text-black">
                 {selectedConversation
                   ? `${selectedConversation.otherUser.username}`
                   : "Select a conversation"}
               </h2>
+              <button
+                type="button"
+                onClick={() => setMessagePanelFullscreen((previous) => !previous)}
+                className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-xs font-semibold text-black transition hover:bg-stone-100"
+              >
+                {messagePanelFullscreen ? "Exit full screen" : "Full screen"}
+              </button>
             </div>
 
             <div ref={messageScrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto pb-3 pr-1">
@@ -763,7 +1100,19 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
                     <p className="mb-1 text-xs font-medium opacity-80">
                       {message.sender.username} | {message.status}
                     </p>
-                    <p>{message.text ?? message.imageKey ?? "[unsupported message]"}</p>
+                    {message.type === "IMAGE" && message.imageKey ? (
+                      <a href={message.imageKey} target="_blank" rel="noopener noreferrer">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={message.imageKey}
+                          alt="Chat upload"
+                          className="max-h-64 w-auto max-w-full rounded-lg object-cover"
+                          loading="lazy"
+                        />
+                      </a>
+                    ) : (
+                      <p>{message.text ?? "[unsupported message]"}</p>
+                    )}
                     <p className="mt-1 text-xs opacity-70">
                       {new Date(message.createdAt).toLocaleString()}
                     </p>
@@ -777,6 +1126,35 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
               className="mt-2 flex flex-col gap-2 border-t border-stone-200 pt-3 sm:flex-row sm:items-center"
             >
               <input
+                ref={imagePickerInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={onImageSelected}
+              />
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => imagePickerInputRef.current?.click()}
+                  disabled={
+                    !selectedConversationId || uploadingImage || sendingMessage || cameraStarting
+                  }
+                  className="rounded-xl border border-stone-300 bg-white px-3 py-2 text-xs font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-200"
+                >
+                  {uploadingImage ? "Uploading..." : "Photo"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void openCameraModal()}
+                  disabled={
+                    !selectedConversationId || uploadingImage || sendingMessage || cameraStarting
+                  }
+                  className="rounded-xl border border-stone-300 bg-white px-3 py-2 text-xs font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-200"
+                >
+                  {cameraStarting ? "Opening..." : "Camera"}
+                </button>
+              </div>
+              <input
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
                 placeholder={
@@ -785,11 +1163,11 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
                     : "Start or select a conversation first"
                 }
                 className="w-full flex-1 rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
-                disabled={!selectedConversationId || sendingMessage}
+                disabled={!selectedConversationId || sendingMessage || uploadingImage}
               />
               <button
                 type="submit"
-                disabled={!selectedConversationId || sendingMessage || !draft.trim()}
+                disabled={!selectedConversationId || sendingMessage || uploadingImage || !draft.trim()}
                 className="rounded-xl border border-stone-300 bg-amber-100 px-4 py-2 text-sm font-semibold text-black transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-stone-200"
               >
                 {sendingMessage ? "Sending..." : "Send"}
@@ -797,6 +1175,52 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
             </form>
           </section>
         </div>
+
+        {cameraOpen ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+            <div className="w-full max-w-md rounded-2xl border border-stone-200 bg-white p-4 shadow-[0_24px_60px_rgba(17,17,17,0.2)]">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-base font-semibold text-black">Capture photo</h3>
+                <button
+                  type="button"
+                  onClick={closeCameraModal}
+                  className="rounded-lg border border-stone-300 bg-white px-3 py-1 text-xs font-semibold text-black hover:bg-stone-100"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="overflow-hidden rounded-xl bg-black">
+                <video
+                  ref={cameraVideoRef}
+                  autoPlay
+                  muted
+                  playsInline
+                  className="h-[360px] w-full object-cover"
+                />
+              </div>
+
+              <div className="mt-3 flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => void switchCameraFacingMode()}
+                  disabled={cameraStarting || uploadingImage}
+                  className="rounded-xl border border-stone-300 bg-white px-3 py-2 text-xs font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-200"
+                >
+                  Switch to {cameraFacingMode === "environment" ? "front" : "back"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void captureFromCamera()}
+                  disabled={cameraStarting || uploadingImage}
+                  className="rounded-xl border border-stone-300 bg-amber-100 px-4 py-2 text-sm font-semibold text-black transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-stone-200"
+                >
+                  {uploadingImage ? "Uploading..." : "Capture & send"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );

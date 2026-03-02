@@ -72,6 +72,13 @@ type PresignUploadResponse = {
   public: boolean;
 };
 
+type RelayUploadResponse = {
+  fileUrl: string;
+  objectKey: string;
+  public: boolean;
+  uploadedVia: "relay";
+};
+
 type CameraFacingMode = "user" | "environment";
 
 type SocketClient = Socket<ServerToClientEvents, ClientToServerEvents>;
@@ -165,6 +172,14 @@ function shouldDisableRealtimeSocket(): boolean {
   }
 
   return window.location.hostname.toLowerCase().endsWith(".vercel.app");
+}
+
+function shouldUseUploadRelay(uploadUrl: string): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return window.location.protocol === "https:" && uploadUrl.startsWith("http://");
 }
 
 function sortMessagesNewestFirst(messages: Message[]): Message[] {
@@ -611,6 +626,25 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   }
 
   async function uploadImageToObjectStore(file: File, contentType: string): Promise<string> {
+    async function uploadViaRelay(): Promise<string> {
+      const formData = new FormData();
+      formData.set("file", file, file.name || `upload-${Date.now()}.jpg`);
+
+      const response = await fetch("/api/uploads/relay", {
+        method: "POST",
+        body: formData,
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        const message =
+          (payload as { error?: { message?: string } } | null)?.error?.message ??
+          "Image upload failed.";
+        throw new Error(message);
+      }
+
+      return (payload as RelayUploadResponse).fileUrl;
+    }
+
     const presign = await fetchJson<PresignUploadResponse>("/api/uploads/presign", {
       method: "POST",
       headers: {
@@ -622,19 +656,31 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
       }),
     });
 
-    const uploadResponse = await fetch(presign.uploadUrl, {
-      method: "PUT",
-      headers: {
-        "Content-Type": contentType,
-      },
-      body: file,
-    });
-
-    if (!uploadResponse.ok) {
-      throw new Error("Image upload failed.");
+    if (shouldUseUploadRelay(presign.uploadUrl)) {
+      return uploadViaRelay();
     }
 
-    return presign.fileUrl;
+    try {
+      const uploadResponse = await fetch(presign.uploadUrl, {
+        method: "PUT",
+        headers: {
+          "Content-Type": contentType,
+        },
+        body: file,
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error("Image upload failed.");
+      }
+
+      return presign.fileUrl;
+    } catch {
+      if (presign.uploadUrl.startsWith("http://")) {
+        return uploadViaRelay();
+      }
+
+      throw new Error("Image upload failed.");
+    }
   }
 
   async function sendImageMessage(conversationId: string, imageUrl: string) {

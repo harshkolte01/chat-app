@@ -1,0 +1,96 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────
+
+enum MessageType {
+  TEXT
+  IMAGE
+}
+
+enum MessageStatus {
+  SENT
+  DELIVERED
+  READ
+}
+
+// ─────────────────────────────────────────────
+// Models
+// ─────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  username     String   @unique
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  // Conversations where this user is stored as "A" (lexicographically smaller UUID)
+  conversationsAsA Conversation[]    @relation("ConversationUserA")
+  // Conversations where this user is stored as "B" (lexicographically larger UUID)
+  conversationsAsB Conversation[]    @relation("ConversationUserB")
+
+  messages          Message[]
+  userConversations UserConversation[]
+}
+
+model Conversation {
+  id        String   @id @default(uuid()) @db.Uuid
+  // Normalisation rule (enforced at app layer before insert):
+  //   userAId = min(userIdX, userIdY)   — lexicographic UUID order
+  //   userBId = max(userIdX, userIdY)
+  // This, combined with @@unique([userAId, userBId]), guarantees exactly
+  // one row per pair regardless of who initiates the chat.
+  userAId   String   @db.Uuid
+  userBId   String   @db.Uuid
+  createdAt DateTime @default(now())
+
+  userA             User               @relation("ConversationUserA", fields: [userAId], references: [id])
+  userB             User               @relation("ConversationUserB", fields: [userBId], references: [id])
+  messages          Message[]
+  userConversations UserConversation[]
+
+  @@unique([userAId, userBId])
+}
+
+model Message {
+  id             String        @id @default(uuid()) @db.Uuid
+  conversationId String        @db.Uuid
+  senderId       String        @db.Uuid
+  type           MessageType   @default(TEXT)
+  /// Populated when type = TEXT
+  text           String?
+  /// S3/MinIO object key; populated when type = IMAGE
+  imageKey       String?
+  status         MessageStatus @default(SENT)
+  createdAt      DateTime      @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User         @relation(fields: [senderId], references: [id])
+
+  @@index([conversationId, createdAt])
+}
+
+/// Tracks the last time each participant read a conversation —
+/// used for unread-count / read-receipt features.
+model UserConversation {
+  conversationId String   @db.Uuid
+  userId         String   @db.Uuid
+  lastReadAt     DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id])
+
+  @@id([conversationId, userId])
+}

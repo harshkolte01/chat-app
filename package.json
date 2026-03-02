@@ -4,10 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "prisma generate && next build",
     "start": "next start",
     "lint": "eslint",
-    "test:socket": "node scripts/socket-realtime-check.mjs"
+    "test:socket": "node scripts/socket-realtime-check.mjs",
+    "db:reset-data": "node scripts/reset-db-data.mjs",
+    "db:create-two-users": "node scripts/create-two-users.mjs"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.4.2",

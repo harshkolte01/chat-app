@@ -30,6 +30,12 @@ type AuthenticatedSocket = Socket<
 const MESSAGE_TEXT_LIMIT = 4000;
 const DELIVERY_ACK_TIMEOUT_MS = Number(process.env.SOCKET_DELIVERY_ACK_TIMEOUT_MS ?? 10_000);
 const pendingDeliveryAcks = new Map<string, NodeJS.Timeout>();
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isUuid(value: string): boolean {
+  return UUID_PATTERN.test(value);
+}
 
 function createSocketError(code: string, message: string): SocketErrorPayload {
   return { code, message };
@@ -336,9 +342,14 @@ async function handleMessageDelivered(
 async function resolveReadTimestamp(
   payload: MessageReadPayload,
 ): Promise<{ timestamp: Date; valid: boolean }> {
-  if (payload.lastReadMessageId?.trim()) {
+  const lastReadMessageId = payload.lastReadMessageId?.trim();
+  if (lastReadMessageId) {
+    if (!isUuid(lastReadMessageId)) {
+      return { timestamp: new Date(), valid: false };
+    }
+
     const message = await prisma.message.findUnique({
-      where: { id: payload.lastReadMessageId.trim() },
+      where: { id: lastReadMessageId },
       select: {
         conversationId: true,
         createdAt: true,

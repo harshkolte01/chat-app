@@ -65,56 +65,76 @@ export function LoginForm() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-zinc-100 p-4">
-      <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-sm">
-        <h1 className="mb-1 text-2xl font-semibold text-zinc-900">Login</h1>
-        <p className="mb-6 text-sm text-zinc-600">Sign in with your email and password.</p>
-
-        {error ? (
-          <div className="mb-4 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
-            {error}
+    <main className="flex min-h-screen items-center justify-center px-4 py-8 sm:px-6 lg:px-8">
+      <section className="w-full max-w-5xl overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-[0_24px_60px_rgba(17,17,17,0.08)]">
+        <div className="grid lg:grid-cols-[1.1fr_1fr]">
+          <div className="hidden bg-stone-100 p-10 lg:block">
+            <p className="inline-flex rounded-full border border-stone-300 bg-amber-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-black">
+              Realtime Workspace
+            </p>
+            <h1 className="mt-6 max-w-sm text-4xl font-semibold leading-tight text-black">
+              Professional chat, focused on clarity.
+            </h1>
+            <p className="mt-4 max-w-sm text-sm leading-relaxed text-black/70">
+              Secure signin with a clean light interface designed for phone, laptop, and desktop.
+            </p>
+            <div className="mt-8 space-y-3 text-sm text-black/85">
+              <p>Instant updates with Socket.IO fallback.</p>
+              <p>Conversation-first layout for faster team response.</p>
+            </div>
           </div>
-        ) : null}
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <label className="block">
-            <span className="mb-1 block text-sm font-medium text-zinc-700">Email</span>
-            <input
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-500"
-              required
-            />
-          </label>
+          <div className="p-6 sm:p-8 lg:p-10">
+            <h2 className="mb-1 text-3xl font-semibold text-black">Login</h2>
+            <p className="mb-6 text-sm text-black/70">Sign in with your email and password.</p>
 
-          <label className="block">
-            <span className="mb-1 block text-sm font-medium text-zinc-700">Password</span>
-            <input
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              className="w-full rounded-md border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-500"
-              required
-            />
-          </label>
+            {error ? (
+              <div className="mb-4 rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {error}
+              </div>
+            ) : null}
 
-          <button
-            type="submit"
-            disabled={submitting}
-            className="w-full rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-zinc-400"
-          >
-            {submitting ? "Signing in..." : "Sign in"}
-          </button>
-        </form>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <label className="block">
+                <span className="mb-1 block text-sm font-semibold text-black">Email</span>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
+                  required
+                />
+              </label>
 
-        <p className="mt-4 text-sm text-zinc-600">
-          New here?{" "}
-          <Link href="/signup" className="font-medium text-zinc-900 underline">
-            Create an account
-          </Link>
-        </p>
-      </div>
+              <label className="block">
+                <span className="mb-1 block text-sm font-semibold text-black">Password</span>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
+                  required
+                />
+              </label>
+
+              <button
+                type="submit"
+                disabled={submitting}
+                className="w-full rounded-xl border border-stone-300 bg-amber-100 px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-stone-200"
+              >
+                {submitting ? "Signing in..." : "Sign in"}
+              </button>
+            </form>
+
+            <p className="mt-5 text-sm text-black/70">
+              New here?{" "}
+              <Link href="/signup" className="font-semibold text-black underline decoration-black/70">
+                Create an account
+              </Link>
+            </p>
+          </div>
+        </div>
+      </section>
     </main>
   );
 }

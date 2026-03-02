@@ -55,9 +55,24 @@ type SendMessageResponse = {
   sender: PublicUser;
 };
 
+type UsersResponse = {
+  users: PublicUser[];
+};
+
+type CreateConversationResponse = {
+  conversationId: string;
+  created: boolean;
+};
+
 type SocketClient = Socket<ServerToClientEvents, ClientToServerEvents>;
 
 const SOCKET_ACK_TIMEOUT_MS = 8_000;
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isUuid(value: string): boolean {
+  return UUID_PATTERN.test(value);
+}
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -233,6 +248,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   const socketRef = useRef<SocketClient | null>(null);
   const selectedConversationIdRef = useRef<string | null>(null);
   const lastReadEventRef = useRef<string | null>(null);
+  const messageScrollRef = useRef<HTMLDivElement | null>(null);
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
@@ -243,12 +259,19 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
   const [socketConnected, setSocketConnected] = useState(false);
+  const [directoryUsers, setDirectoryUsers] = useState<PublicUser[]>([]);
+  const [directoryQuery, setDirectoryQuery] = useState("");
+  const [selectedUserId, setSelectedUserId] = useState("");
+  const [loadingDirectoryUsers, setLoadingDirectoryUsers] = useState(false);
+  const [creatingConversation, setCreatingConversation] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const selectedConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
     [conversations, selectedConversationId],
   );
+  const displayedMessages = useMemo(() => [...messages].reverse(), [messages]);
+  const newestMessageId = messages[0]?.id ?? null;
 
   const loadConversations = useCallback(async () => {
     setLoadingConversations(true);
@@ -279,6 +302,28 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load conversations.");
     } finally {
       setLoadingConversations(false);
+    }
+  }, []);
+
+  const loadDirectoryUsers = useCallback(async (query: string) => {
+    setLoadingDirectoryUsers(true);
+
+    try {
+      const params = new URLSearchParams();
+      if (query.trim()) {
+        params.set("query", query.trim());
+      }
+
+      const suffix = params.toString() ? `?${params.toString()}` : "";
+      const data = await fetchJson<UsersResponse>(`/api/users${suffix}`);
+      setDirectoryUsers(data.users);
+      setSelectedUserId((previous) =>
+        data.users.some((user) => user.id === previous) ? previous : "",
+      );
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Failed to load users.");
+    } finally {
+      setLoadingDirectoryUsers(false);
     }
   }, []);
 
@@ -380,6 +425,39 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     }
   }
 
+  async function onStartConversation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedUserId || creatingConversation) {
+      return;
+    }
+
+    setCreatingConversation(true);
+    setError(null);
+
+    try {
+      const response = await fetchJson<CreateConversationResponse>("/api/conversations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          otherUserId: selectedUserId,
+        }),
+      });
+
+      await loadConversations();
+      setSelectedConversationId(response.conversationId);
+      setMessages([]);
+      setNextCursor(null);
+    } catch (createError) {
+      setError(
+        createError instanceof Error ? createError.message : "Failed to start conversation.",
+      );
+    } finally {
+      setCreatingConversation(false);
+    }
+  }
+
   async function onLogout() {
     const socket = socketRef.current;
     if (socket) {
@@ -402,6 +480,16 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   useEffect(() => {
     void loadConversations();
   }, [loadConversations]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void loadDirectoryUsers(directoryQuery);
+    }, 250);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [directoryQuery, loadDirectoryUsers]);
 
   useEffect(() => {
     if (!selectedConversationId) {
@@ -497,70 +585,133 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     }
 
     const newestMessage = messages[0];
-    const readKey = `${selectedConversationId}:${newestMessage.id}`;
+    const persistedId = isUuid(newestMessage.id) ? newestMessage.id : null;
+    const readMarker = persistedId ?? newestMessage.createdAt;
+    const readKey = `${selectedConversationId}:${readMarker}`;
     if (lastReadEventRef.current === readKey) {
       return;
     }
 
     lastReadEventRef.current = readKey;
+    if (persistedId) {
+      socket.emit("chat:message_read", {
+        conversationId: selectedConversationId,
+        lastReadMessageId: persistedId,
+      });
+      return;
+    }
+
     socket.emit("chat:message_read", {
       conversationId: selectedConversationId,
-      lastReadMessageId: newestMessage.id,
+      timestamp: newestMessage.createdAt,
     });
   }, [messages, selectedConversationId, socketConnected]);
 
+  useEffect(() => {
+    const container = messageScrollRef.current;
+    if (!container) {
+      return;
+    }
+
+    container.scrollTop = container.scrollHeight;
+  }, [selectedConversationId, newestMessageId]);
+
   return (
-    <div className="min-h-screen bg-zinc-100 p-6">
-      <div className="mx-auto flex max-w-6xl flex-col gap-4">
-        <header className="flex items-center justify-between rounded-lg bg-white px-4 py-3 shadow-sm">
+    <div className="h-screen overflow-hidden px-3 py-4 sm:px-5 sm:py-6 lg:px-8 lg:py-8">
+      <div className="mx-auto flex h-full w-full max-w-7xl flex-col gap-4 overflow-hidden">
+        <header className="flex flex-col gap-3 rounded-2xl border border-stone-200 bg-white px-4 py-4 shadow-[0_14px_34px_rgba(17,17,17,0.06)] sm:flex-row sm:items-start sm:justify-between sm:px-5">
           <div>
-            <h1 className="text-lg font-semibold text-zinc-900">Chat</h1>
-            <p className="text-sm text-zinc-600">
+            <h1 className="text-2xl font-semibold text-black">Chat Workspace</h1>
+            <p className="text-sm text-black/70">
               Signed in as {currentUser.username} ({currentUser.email})
             </p>
-            <p className="text-xs text-zinc-500">
+            <p className="text-xs font-medium uppercase tracking-wide text-black/55">
               Realtime: {socketConnected ? "connected" : "disconnected (REST fallback active)"}
             </p>
           </div>
           <button
             type="button"
             onClick={onLogout}
-            className="rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+            className="w-full rounded-xl border border-stone-300 bg-amber-100 px-3 py-2 text-sm font-semibold text-black transition hover:bg-amber-200 sm:w-auto"
           >
             Logout
           </button>
         </header>
 
         {error ? (
-          <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+          <div className="rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
             {error}
           </div>
         ) : null}
 
-        <div className="grid min-h-[70vh] grid-cols-1 gap-4 md:grid-cols-[280px_1fr]">
-          <aside className="rounded-lg bg-white p-4 shadow-sm">
-            <h2 className="mb-3 text-sm font-semibold text-zinc-900">Conversations</h2>
-            {loadingConversations ? <p className="text-sm text-zinc-600">Loading...</p> : null}
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
+          <aside className="flex min-h-0 flex-col rounded-2xl border border-stone-200 bg-white p-4 shadow-[0_14px_34px_rgba(17,17,17,0.05)]">
+            <div className="mb-4 rounded-xl border border-stone-200 bg-stone-50 p-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-black">
+                Start private chat
+              </h3>
+              <p className="mt-1 text-xs text-black/65">
+                Only you and selected user can read that conversation.
+              </p>
+              <form onSubmit={onStartConversation} className="mt-3 space-y-2">
+                <input
+                  value={directoryQuery}
+                  onChange={(event) => setDirectoryQuery(event.target.value)}
+                  placeholder="Search by username or email"
+                  className="w-full rounded-lg border border-stone-300 bg-white px-2.5 py-2 text-xs text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
+                />
+                <select
+                  value={selectedUserId}
+                  onChange={(event) => setSelectedUserId(event.target.value)}
+                  className="w-full rounded-lg border border-stone-300 bg-white px-2.5 py-2 text-xs text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
+                >
+                  <option value="">Select user</option>
+                  {directoryUsers.map((user) => (
+                    <option key={user.id} value={user.id}>
+                      {user.username} ({user.email})
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="submit"
+                  disabled={!selectedUserId || creatingConversation}
+                  className="w-full rounded-lg border border-stone-300 bg-amber-100 px-3 py-2 text-xs font-semibold text-black transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-stone-200"
+                >
+                  {creatingConversation ? "Starting..." : "Start chat"}
+                </button>
+              </form>
+              {loadingDirectoryUsers ? (
+                <p className="mt-2 text-xs text-black/60">Loading users...</p>
+              ) : null}
+              {!loadingDirectoryUsers && directoryUsers.length === 0 ? (
+                <p className="mt-2 text-xs text-black/60">
+                  No users found. Create another account to start a private chat.
+                </p>
+              ) : null}
+            </div>
+
+            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-black">
+              Conversations
+            </h2>
+            {loadingConversations ? <p className="text-sm text-black/70">Loading...</p> : null}
 
             {!loadingConversations && conversations.length === 0 ? (
-              <p className="text-sm text-zinc-600">
-                No conversations yet. Create one using `POST /api/conversations`.
-              </p>
+              <p className="text-sm text-black/70">No conversations yet. Start one above.</p>
             ) : null}
 
-            <div className="flex flex-col gap-2">
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
               {conversations.map((conversation) => (
                 <button
                   key={conversation.id}
                   type="button"
                   onClick={() => setSelectedConversationId(conversation.id)}
-                  className={`rounded-md border px-3 py-2 text-left ${
+                  className={`min-w-[240px] rounded-xl border px-3 py-2 text-left transition xl:min-w-0 ${
                     conversation.id === selectedConversationId
-                      ? "border-zinc-900 bg-zinc-900 text-white"
-                      : "border-zinc-200 bg-white text-zinc-900 hover:bg-zinc-50"
+                      ? "border-stone-400 bg-amber-100 text-black"
+                      : "border-stone-200 bg-white text-black hover:bg-stone-100"
                   }`}
                 >
-                  <p className="font-medium">{conversation.otherUser.username}</p>
+                  <p className="text-sm font-semibold">{conversation.otherUser.username}</p>
                   <p className="truncate text-xs opacity-80">
                     {conversation.lastMessage?.textPreview ?? "No messages yet"}
                   </p>
@@ -569,20 +720,20 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
             </div>
           </aside>
 
-          <section className="flex flex-col rounded-lg bg-white p-4 shadow-sm">
-            <div className="mb-3 border-b border-zinc-200 pb-3">
-              <h2 className="text-base font-semibold text-zinc-900">
+          <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-stone-200 bg-white p-4 shadow-[0_14px_34px_rgba(17,17,17,0.05)] sm:p-5">
+            <div className="mb-3 border-b border-stone-200 pb-3">
+              <h2 className="text-lg font-semibold text-black">
                 {selectedConversation
                   ? `${selectedConversation.otherUser.username}`
                   : "Select a conversation"}
               </h2>
             </div>
 
-            <div className="flex-1 space-y-3 overflow-y-auto pb-3">
-              {loadingMessages ? <p className="text-sm text-zinc-600">Loading messages...</p> : null}
+            <div ref={messageScrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto pb-3 pr-1">
+              {loadingMessages ? <p className="text-sm text-black/70">Loading messages...</p> : null}
 
               {!loadingMessages && messages.length === 0 ? (
-                <p className="text-sm text-zinc-600">No messages in this conversation yet.</p>
+                <p className="text-sm text-black/70">No messages in this conversation yet.</p>
               ) : null}
 
               {nextCursor ? (
@@ -591,24 +742,26 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
                   onClick={() =>
                     selectedConversationId ? loadMessages(selectedConversationId, nextCursor) : null
                   }
-                  className="rounded-md border border-zinc-300 px-3 py-1 text-xs text-zinc-700 hover:bg-zinc-50"
+                  className="rounded-xl border border-stone-300 px-3 py-1 text-xs font-semibold text-black transition hover:bg-stone-100"
                 >
                   Load older messages
                 </button>
               ) : null}
 
-              {messages.map((message) => {
+              {displayedMessages.map((message) => {
                 const isCurrentUser = message.senderId === currentUser.id;
 
                 return (
                   <div
                     key={message.id}
-                    className={`max-w-xl rounded-md px-3 py-2 text-sm ${
-                      isCurrentUser ? "ml-auto bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-900"
+                    className={`max-w-[92%] rounded-xl border px-3 py-2 text-sm shadow-[0_6px_16px_rgba(17,17,17,0.04)] sm:max-w-[80%] ${
+                      isCurrentUser
+                        ? "ml-auto border-amber-200 bg-amber-100 text-black"
+                        : "border-stone-200 bg-stone-100 text-black"
                     }`}
                   >
-                    <p className="mb-1 text-xs opacity-80">
-                      {message.sender.username} · {message.status}
+                    <p className="mb-1 text-xs font-medium opacity-80">
+                      {message.sender.username} | {message.status}
                     </p>
                     <p>{message.text ?? message.imageKey ?? "[unsupported message]"}</p>
                     <p className="mt-1 text-xs opacity-70">
@@ -621,19 +774,23 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
 
             <form
               onSubmit={onSendMessage}
-              className="mt-3 flex items-center gap-2 border-t border-zinc-200 pt-3"
+              className="mt-2 flex flex-col gap-2 border-t border-stone-200 pt-3 sm:flex-row sm:items-center"
             >
               <input
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
-                placeholder="Type a message"
-                className="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-zinc-500"
+                placeholder={
+                  selectedConversationId
+                    ? "Type a private message"
+                    : "Start or select a conversation first"
+                }
+                className="w-full flex-1 rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
                 disabled={!selectedConversationId || sendingMessage}
               />
               <button
                 type="submit"
                 disabled={!selectedConversationId || sendingMessage || !draft.trim()}
-                className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-zinc-400"
+                className="rounded-xl border border-stone-300 bg-amber-100 px-4 py-2 text-sm font-semibold text-black transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-stone-200"
               >
                 {sendingMessage ? "Sending..." : "Send"}
               </button>
@@ -644,3 +801,4 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     </div>
   );
 }
+

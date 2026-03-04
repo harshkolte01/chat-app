@@ -15,6 +15,17 @@ type MessageRecord = {
   imageKey: string | null;
   status: "SENT" | "DELIVERED" | "READ";
   createdAt: Date;
+  replyToMessage: {
+    id: string;
+    senderId: string;
+    type: "TEXT" | "IMAGE";
+    text: string | null;
+    imageKey: string | null;
+    createdAt: Date;
+    sender: {
+      username: string;
+    };
+  } | null;
   sender: {
     id: string;
     username: string;
@@ -80,6 +91,21 @@ export async function GET(request: NextRequest) {
     take: PAGE_SIZE,
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     include: {
+      replyToMessage: {
+        select: {
+          id: true,
+          senderId: true,
+          type: true,
+          text: true,
+          imageKey: true,
+          createdAt: true,
+          sender: {
+            select: {
+              username: true,
+            },
+          },
+        },
+      },
       sender: {
         select: {
           id: true,
@@ -102,6 +128,17 @@ export async function GET(request: NextRequest) {
       type: message.type,
       text: message.text,
       imageKey: message.imageKey,
+      replyTo: message.replyToMessage
+        ? {
+            id: message.replyToMessage.id,
+            senderId: message.replyToMessage.senderId,
+            senderUsername: message.replyToMessage.sender.username,
+            type: message.replyToMessage.type,
+            text: message.replyToMessage.text,
+            imageKey: message.replyToMessage.imageKey,
+            createdAt: message.replyToMessage.createdAt.toISOString(),
+          }
+        : null,
       status: message.status,
       createdAt: message.createdAt.toISOString(),
     })),

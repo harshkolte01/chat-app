@@ -38,7 +38,18 @@ type Message = {
   type: "TEXT" | "IMAGE";
   text: string | null;
   imageKey: string | null;
+  replyTo: MessageReply | null;
   status: "SENT" | "DELIVERED" | "READ";
+  createdAt: string;
+};
+
+type MessageReply = {
+  id: string;
+  senderId: string;
+  senderUsername: string;
+  type: "TEXT" | "IMAGE";
+  text: string | null;
+  imageKey: string | null;
   createdAt: string;
 };
 
@@ -242,6 +253,7 @@ function toMessageFromSocket(payload: ChatNewMessageEvent): Message {
     type: payload.message.type,
     text: payload.message.text,
     imageKey: payload.message.imageKey,
+    replyTo: payload.message.replyTo,
     status: payload.message.status,
     createdAt: payload.message.createdAt,
   };
@@ -256,6 +268,7 @@ function toMessageFromSendResponse(response: SendMessageResponse): Message {
     type: response.message.type,
     text: response.message.text,
     imageKey: response.message.imageKey,
+    replyTo: response.message.replyTo,
     status: response.message.status,
     createdAt: response.message.createdAt,
   };
@@ -270,6 +283,7 @@ function toMessageFromSocketAck(data: SendMessageAckData): Message {
     type: data.message.type,
     text: data.message.text,
     imageKey: data.message.imageKey,
+    replyTo: data.message.replyTo,
     status: data.message.status,
     createdAt: data.message.createdAt,
   };
@@ -280,6 +294,25 @@ function messagePreview(message: SocketMessage | Message): string {
     return message.text ?? "";
   }
   return "[image]";
+}
+
+function messageReplyPreview(replyTo: MessageReply): string {
+  if (replyTo.type === "TEXT") {
+    return replyTo.text?.trim() || "[message]";
+  }
+  return "[image]";
+}
+
+function toReplyTarget(message: Message): MessageReply {
+  return {
+    id: message.id,
+    senderId: message.senderId,
+    senderUsername: message.sender.username,
+    type: message.type,
+    text: message.text,
+    imageKey: message.imageKey,
+    createdAt: message.createdAt,
+  };
 }
 
 function updateConversationPreview(
@@ -348,6 +381,7 @@ function emitSendMessageWithAck(
     type: "text" | "image";
     text?: string;
     imageKey?: string;
+    replyToMessageId?: string;
     clientMessageId: string;
   },
 ) {
@@ -393,6 +427,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [replyingTo, setReplyingTo] = useState<MessageReply | null>(null);
   const [loadingConversations, setLoadingConversations] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
@@ -544,6 +579,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     conversationId: string;
     text?: string;
     imageUrl?: string;
+    replyToMessageId?: string;
   }) {
     const response = await fetchJson<SendMessageResponse>("/api/messages/send", {
       method: "POST",
@@ -565,6 +601,9 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
       return;
     }
 
+    const activeReplyTo =
+      replyingTo && replyingTo.id && conversationId ? replyingTo : null;
+
     setSendingMessage(true);
     setError(null);
     setDraft("");
@@ -578,6 +617,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
       type: "TEXT",
       text,
       imageKey: null,
+      replyTo: activeReplyTo,
       status: "SENT",
       createdAt: new Date().toISOString(),
     };
@@ -594,6 +634,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
           conversationId,
           type: "text",
           text,
+          replyToMessageId: activeReplyTo?.id,
           clientMessageId,
         });
 
@@ -603,12 +644,14 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
           storedMessage = await sendViaRestFallback({
             conversationId,
             text,
+            replyToMessageId: activeReplyTo?.id,
           });
         }
       } else {
         storedMessage = await sendViaRestFallback({
           conversationId,
           text,
+          replyToMessageId: activeReplyTo?.id,
         });
       }
 
@@ -616,9 +659,11 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
         previous.map((message) => (message.id === clientMessageId ? storedMessage : message)),
       );
       setConversations((previous) => updateConversationPreview(previous, storedMessage));
+      setReplyingTo(null);
     } catch (sendError) {
       setMessages((previous) => previous.filter((message) => message.id !== clientMessageId));
       setDraft(text);
+      setReplyingTo(activeReplyTo);
       setError(sendError instanceof Error ? sendError.message : "Failed to send message.");
     } finally {
       setSendingMessage(false);
@@ -683,7 +728,11 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     }
   }
 
-  async function sendImageMessage(conversationId: string, imageUrl: string) {
+  async function sendImageMessage(
+    conversationId: string,
+    imageUrl: string,
+    replyTo: MessageReply | null,
+  ) {
     const clientMessageId = `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const optimisticMessage: Message = {
       id: clientMessageId,
@@ -693,6 +742,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
       type: "IMAGE",
       text: null,
       imageKey: imageUrl,
+      replyTo,
       status: "SENT",
       createdAt: new Date().toISOString(),
     };
@@ -709,6 +759,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
           conversationId,
           type: "image",
           imageKey: imageUrl,
+          replyToMessageId: replyTo?.id,
           clientMessageId,
         });
 
@@ -718,12 +769,14 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
           storedMessage = await sendViaRestFallback({
             conversationId,
             imageUrl,
+            replyToMessageId: replyTo?.id,
           });
         }
       } else {
         storedMessage = await sendViaRestFallback({
           conversationId,
           imageUrl,
+          replyToMessageId: replyTo?.id,
         });
       }
 
@@ -742,6 +795,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     if (!file || !conversationId || uploadingImage || sendingMessage) {
       return;
     }
+    const activeReplyTo = replyingTo;
 
     const contentType = file.type?.trim() || "image/jpeg";
     if (!contentType.startsWith("image/")) {
@@ -759,7 +813,8 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
 
     try {
       const imageUrl = await uploadImageToObjectStore(file, contentType);
-      await sendImageMessage(conversationId, imageUrl);
+      await sendImageMessage(conversationId, imageUrl, activeReplyTo);
+      setReplyingTo(null);
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : "Failed to upload image.");
     } finally {
@@ -983,6 +1038,10 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
 
     void loadMessages(selectedConversationId);
   }, [loadMessages, selectedConversationId]);
+
+  useEffect(() => {
+    setReplyingTo(null);
+  }, [selectedConversationId]);
 
   useEffect(() => {
     if (socketConnected) {
@@ -1441,6 +1500,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
                   message.type === "IMAGE" && message.imageKey
                     ? normalizeMessageImageUrl(message.imageKey)
                     : null;
+                const replySnippet = message.replyTo ? messageReplyPreview(message.replyTo) : null;
 
                 return (
                   <div
@@ -1451,9 +1511,28 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
                         : "border-stone-200 bg-stone-100 text-black"
                     }`}
                   >
-                    <p className="mb-1 text-xs font-medium opacity-80">
-                      {message.sender.username} | {message.status}
-                    </p>
+                    <div className="mb-1 flex items-center justify-between gap-3">
+                      <p className="text-xs font-medium opacity-80">
+                        {message.sender.username} | {message.status}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setReplyingTo(toReplyTarget(message))}
+                        className="rounded-md border border-black/15 bg-white/60 px-2 py-0.5 text-[11px] font-semibold text-black/80 transition hover:bg-white"
+                      >
+                        Reply
+                      </button>
+                    </div>
+                    {message.replyTo ? (
+                      <div className="mb-2 rounded-lg border border-black/10 bg-white/45 px-2 py-1">
+                        <p className="text-[11px] font-semibold text-black/75">
+                          {message.replyTo.senderId === currentUser.id
+                            ? "You"
+                            : message.replyTo.senderUsername}
+                        </p>
+                        <p className="truncate text-xs text-black/70">{replySnippet}</p>
+                      </div>
+                    ) : null}
                     {message.type === "IMAGE" && normalizedImageUrl ? (
                       <a href={normalizedImageUrl} target="_blank" rel="noopener noreferrer">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1481,7 +1560,10 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
               sendingMessage={sendingMessage}
               uploadingImage={uploadingImage}
               cameraStarting={cameraStarting}
+              currentUserId={currentUser.id}
+              replyingTo={replyingTo}
               onDraftChange={setDraft}
+              onCancelReply={() => setReplyingTo(null)}
               onSendMessage={onSendMessage}
               onImageSelected={onImageSelected}
               onOpenCamera={openCameraModal}

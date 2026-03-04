@@ -21,13 +21,26 @@ type EmojiSuggestion = {
   shortcode: string;
 };
 
+type ComposerReplyTarget = {
+  id: string;
+  senderId: string;
+  senderUsername: string;
+  type: "TEXT" | "IMAGE";
+  text: string | null;
+  imageKey: string | null;
+  createdAt: string;
+};
+
 type ComposerProps = {
   draft: string;
   selectedConversationId: string | null;
   sendingMessage: boolean;
   uploadingImage: boolean;
   cameraStarting: boolean;
+  currentUserId: string;
+  replyingTo: ComposerReplyTarget | null;
   onDraftChange: (value: string) => void;
+  onCancelReply: () => void;
   onSendMessage: (event: FormEvent<HTMLFormElement>) => void | Promise<void>;
   onImageSelected: (event: ChangeEvent<HTMLInputElement>) => void | Promise<void>;
   onOpenCamera: () => void | Promise<void>;
@@ -35,6 +48,15 @@ type ComposerProps = {
 
 const SHORTCODE_QUERY_PATTERN = /(^|[\s([{]):([a-z0-9_+-]{2,32})$/i;
 const MAX_SHORTCODE_RESULTS = 7;
+
+function formatReplyPreview(replyingTo: ComposerReplyTarget): string {
+  if (replyingTo.type === "TEXT") {
+    const preview = replyingTo.text?.trim();
+    return preview && preview.length > 0 ? preview : "[message]";
+  }
+
+  return "[image]";
+}
 
 function resolveEmojiData(moduleData: unknown): EmojiDataRecord | null {
   if (!moduleData || typeof moduleData !== "object") {
@@ -150,7 +172,10 @@ export function Composer({
   sendingMessage,
   uploadingImage,
   cameraStarting,
+  currentUserId,
+  replyingTo,
   onDraftChange,
+  onCancelReply,
   onSendMessage,
   onImageSelected,
   onOpenCamera,
@@ -169,6 +194,12 @@ export function Composer({
   const areActionButtonsDisabled =
     !selectedConversationId || uploadingImage || sendingMessage || cameraStarting;
   const isEmojiPickerVisible = emojiPickerOpen && !isComposerDisabled;
+  const replySenderLabel = replyingTo
+    ? replyingTo.senderId === currentUserId
+      ? "You"
+      : replyingTo.senderUsername
+    : "";
+  const replyPreview = replyingTo ? formatReplyPreview(replyingTo) : "";
   const showShortcodeSuggestions =
     !isComposerDisabled &&
     !isEmojiPickerVisible &&
@@ -397,7 +428,7 @@ export function Composer({
         clearShortcodeSuggestions();
         void onSendMessage(event);
       }}
-      className="mt-2 flex flex-col gap-2 border-t border-stone-200 pt-3 sm:flex-row sm:items-center"
+      className="mt-2 border-t border-stone-200 pt-3"
     >
       <input
         ref={imagePickerInputRef}
@@ -409,128 +440,150 @@ export function Composer({
         }}
       />
 
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => {
-            setEmojiPickerOpen(false);
-            clearShortcodeSuggestions();
-            imagePickerInputRef.current?.click();
-          }}
-          disabled={areActionButtonsDisabled}
-          className="rounded-xl border border-stone-300 bg-white px-3 py-2 text-xs font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-200"
-        >
-          {uploadingImage ? "Uploading..." : "Photo"}
-        </button>
+      {replyingTo ? (
+        <div className="mb-2 rounded-xl border border-stone-300 bg-stone-50 px-3 py-2">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-wide text-black/70">
+                Replying to {replySenderLabel}
+              </p>
+              <p className="truncate text-sm text-black">{replyPreview}</p>
+            </div>
+            <button
+              type="button"
+              onClick={onCancelReply}
+              className="shrink-0 rounded-md border border-stone-300 bg-white px-2 py-1 text-[11px] font-semibold text-black transition hover:bg-stone-100"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
 
-        <button
-          type="button"
-          onClick={() => {
-            setEmojiPickerOpen(false);
-            clearShortcodeSuggestions();
-            void onOpenCamera();
-          }}
-          disabled={areActionButtonsDisabled}
-          className="rounded-xl border border-stone-300 bg-white px-3 py-2 text-xs font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-200"
-        >
-          {cameraStarting ? "Opening..." : "Camera"}
-        </button>
-
-        <div className="relative">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="flex items-center gap-2">
           <button
-            ref={emojiButtonRef}
             type="button"
             onClick={() => {
+              setEmojiPickerOpen(false);
               clearShortcodeSuggestions();
-              setEmojiPickerOpen((previous) => !previous);
+              imagePickerInputRef.current?.click();
             }}
-            disabled={isComposerDisabled}
-            aria-label="Open emoji picker"
-            aria-haspopup="dialog"
-            aria-expanded={isEmojiPickerVisible}
+            disabled={areActionButtonsDisabled}
             className="rounded-xl border border-stone-300 bg-white px-3 py-2 text-xs font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-200"
           >
-            <svg
-              aria-hidden="true"
-              viewBox="0 0 24 24"
-              className="h-4 w-4"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <circle cx="12" cy="12" r="9" />
-              <path d="M9 10h.01" />
-              <path d="M15 10h.01" />
-              <path d="M8 14c1 1.5 2.3 2 4 2s3-.5 4-2" />
-            </svg>
+            {uploadingImage ? "Uploading..." : "Photo"}
           </button>
 
-          <EmojiPicker
-            open={isEmojiPickerVisible}
-            anchorRef={emojiButtonRef}
-            onSelect={handleEmojiSelect}
-            onClose={() => setEmojiPickerOpen(false)}
+          <button
+            type="button"
+            onClick={() => {
+              setEmojiPickerOpen(false);
+              clearShortcodeSuggestions();
+              void onOpenCamera();
+            }}
+            disabled={areActionButtonsDisabled}
+            className="rounded-xl border border-stone-300 bg-white px-3 py-2 text-xs font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-200"
+          >
+            {cameraStarting ? "Opening..." : "Camera"}
+          </button>
+
+          <div className="relative">
+            <button
+              ref={emojiButtonRef}
+              type="button"
+              onClick={() => {
+                clearShortcodeSuggestions();
+                setEmojiPickerOpen((previous) => !previous);
+              }}
+              disabled={isComposerDisabled}
+              aria-label="Open emoji picker"
+              aria-haspopup="dialog"
+              aria-expanded={isEmojiPickerVisible}
+              className="rounded-xl border border-stone-300 bg-white px-3 py-2 text-xs font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-200"
+            >
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 24 24"
+                className="h-4 w-4"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M9 10h.01" />
+                <path d="M15 10h.01" />
+                <path d="M8 14c1 1.5 2.3 2 4 2s3-.5 4-2" />
+              </svg>
+            </button>
+
+            <EmojiPicker
+              open={isEmojiPickerVisible}
+              anchorRef={emojiButtonRef}
+              onSelect={handleEmojiSelect}
+              onClose={() => setEmojiPickerOpen(false)}
+            />
+          </div>
+        </div>
+
+        <div className="relative w-full flex-1">
+          {showShortcodeSuggestions ? (
+            <div className="absolute bottom-[calc(100%+0.375rem)] left-0 right-0 z-[80] overflow-hidden rounded-xl border border-stone-300 bg-white shadow-[0_14px_30px_rgba(17,17,17,0.12)]">
+              {shortcodeSuggestions.map((suggestion, index) => (
+                <button
+                  key={`${suggestion.id}-${suggestion.shortcode}`}
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => applyShortcodeSuggestion(suggestion)}
+                  className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-black transition ${
+                    index === highlightedSuggestionIndex ? "bg-amber-100" : "hover:bg-stone-100"
+                  }`}
+                >
+                  <span className="text-xl leading-none">{suggestion.native}</span>
+                  <span className="truncate text-sm">{suggestion.name}</span>
+                  <span className="ml-auto text-xs font-medium text-black/65">
+                    :{suggestion.shortcode}:
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          <input
+            ref={textInputRef}
+            value={draft}
+            onChange={(event) => {
+              const nextDraft = event.target.value;
+              onDraftChange(nextDraft);
+              updateShortcodeToken(nextDraft, event.target.selectionStart ?? nextDraft.length);
+            }}
+            onClick={(event) =>
+              updateShortcodeToken(event.currentTarget.value, event.currentTarget.selectionStart)
+            }
+            onKeyUp={(event) =>
+              updateShortcodeToken(event.currentTarget.value, event.currentTarget.selectionStart)
+            }
+            onKeyDown={onInputKeyDown}
+            placeholder={
+              selectedConversationId
+                ? "Type a private message (use :sm for emoji)"
+                : "Start or select a conversation first"
+            }
+            className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
+            disabled={isComposerDisabled}
           />
         </div>
+
+        <button
+          type="submit"
+          disabled={!selectedConversationId || sendingMessage || uploadingImage || !draft.trim()}
+          className="rounded-xl border border-stone-300 bg-amber-100 px-4 py-2 text-sm font-semibold text-black transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-stone-200"
+        >
+          {sendingMessage ? "Sending..." : "Send"}
+        </button>
       </div>
-
-      <div className="relative w-full flex-1">
-        {showShortcodeSuggestions ? (
-          <div className="absolute bottom-[calc(100%+0.375rem)] left-0 right-0 z-[80] overflow-hidden rounded-xl border border-stone-300 bg-white shadow-[0_14px_30px_rgba(17,17,17,0.12)]">
-            {shortcodeSuggestions.map((suggestion, index) => (
-              <button
-                key={`${suggestion.id}-${suggestion.shortcode}`}
-                type="button"
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => applyShortcodeSuggestion(suggestion)}
-                className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-black transition ${
-                  index === highlightedSuggestionIndex ? "bg-amber-100" : "hover:bg-stone-100"
-                }`}
-              >
-                <span className="text-xl leading-none">{suggestion.native}</span>
-                <span className="truncate text-sm">{suggestion.name}</span>
-                <span className="ml-auto text-xs font-medium text-black/65">
-                  :{suggestion.shortcode}:
-                </span>
-              </button>
-            ))}
-          </div>
-        ) : null}
-
-        <input
-          ref={textInputRef}
-          value={draft}
-          onChange={(event) => {
-            const nextDraft = event.target.value;
-            onDraftChange(nextDraft);
-            updateShortcodeToken(nextDraft, event.target.selectionStart ?? nextDraft.length);
-          }}
-          onClick={(event) =>
-            updateShortcodeToken(event.currentTarget.value, event.currentTarget.selectionStart)
-          }
-          onKeyUp={(event) =>
-            updateShortcodeToken(event.currentTarget.value, event.currentTarget.selectionStart)
-          }
-          onKeyDown={onInputKeyDown}
-          placeholder={
-            selectedConversationId
-              ? "Type a private message (use :sm for emoji)"
-              : "Start or select a conversation first"
-          }
-          className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
-          disabled={isComposerDisabled}
-        />
-      </div>
-
-      <button
-        type="submit"
-        disabled={!selectedConversationId || sendingMessage || uploadingImage || !draft.trim()}
-        className="rounded-xl border border-stone-300 bg-amber-100 px-4 py-2 text-sm font-semibold text-black transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-stone-200"
-      >
-        {sendingMessage ? "Sending..." : "Send"}
-      </button>
     </form>
   );
 }

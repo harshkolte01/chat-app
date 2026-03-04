@@ -17,6 +17,7 @@ import {
   SocketErrorPayload,
   SocketMessage,
   SocketPublicUser,
+  SocketReplyMessage,
 } from "@/lib/socket/contracts";
 
 type SocketServer = SocketIOServer<ClientToServerEvents, ServerToClientEvents, object, SocketData>;
@@ -123,6 +124,34 @@ function userRoom(userId: string): string {
   return `user:${userId}`;
 }
 
+type SocketReplySource = {
+  id: string;
+  senderId: string;
+  type: ChatMessageType;
+  text: string | null;
+  imageKey: string | null;
+  createdAt: Date;
+  sender: {
+    username: string;
+  };
+} | null;
+
+function toSocketReplyMessage(replyTo: SocketReplySource): SocketReplyMessage | null {
+  if (!replyTo) {
+    return null;
+  }
+
+  return {
+    id: replyTo.id,
+    senderId: replyTo.senderId,
+    senderUsername: replyTo.sender.username,
+    type: replyTo.type,
+    text: replyTo.text,
+    imageKey: replyTo.imageKey,
+    createdAt: replyTo.createdAt.toISOString(),
+  };
+}
+
 function toSocketMessage(message: {
   id: string;
   conversationId: string;
@@ -130,6 +159,7 @@ function toSocketMessage(message: {
   type: ChatMessageType;
   text: string | null;
   imageKey: string | null;
+  replyToMessage: SocketReplySource;
   status: "SENT" | "DELIVERED" | "READ";
   createdAt: Date;
 }): SocketMessage {
@@ -140,6 +170,7 @@ function toSocketMessage(message: {
     type: message.type,
     text: message.text,
     imageKey: message.imageKey,
+    replyTo: toSocketReplyMessage(message.replyToMessage),
     status: message.status,
     createdAt: message.createdAt.toISOString(),
   };
@@ -182,10 +213,15 @@ async function handleSendMessage(
   const sender = socket.data.user;
   const conversationId = payload.conversationId?.trim();
   const messageType = parseIncomingMessageType(payload.type);
+  const replyToMessageId = payload.replyToMessageId?.trim() || null;
   const clientMessageId = payload.clientMessageId?.trim() || null;
 
   if (!conversationId || !messageType) {
     return ackError(ack, "INVALID_PAYLOAD", "conversationId and valid type are required.");
+  }
+
+  if (replyToMessageId && !isUuid(replyToMessageId)) {
+    return ackError(ack, "INVALID_PAYLOAD", "replyToMessageId must be a valid UUID.");
   }
 
   const conversation = await getConversationForMember(conversationId, sender.id);
@@ -220,11 +256,32 @@ async function handleSendMessage(
     }
   }
 
+  if (replyToMessageId) {
+    const replyTarget = await prisma.message.findFirst({
+      where: {
+        id: replyToMessageId,
+        conversationId,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!replyTarget) {
+      return ackError(
+        ack,
+        "INVALID_REPLY_TARGET",
+        "replyToMessageId must reference a message in the same conversation.",
+      );
+    }
+  }
+
   const now = new Date();
   const message = await prisma.message.create({
     data: {
       conversationId,
       senderId: sender.id,
+      replyToMessageId,
       type: messageType,
       text,
       imageKey,
@@ -237,6 +294,21 @@ async function handleSendMessage(
       type: true,
       text: true,
       imageKey: true,
+      replyToMessage: {
+        select: {
+          id: true,
+          senderId: true,
+          type: true,
+          text: true,
+          imageKey: true,
+          createdAt: true,
+          sender: {
+            select: {
+              username: true,
+            },
+          },
+        },
+      },
       status: true,
       createdAt: true,
     },

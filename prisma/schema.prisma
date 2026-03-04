@@ -68,6 +68,7 @@ model Message {
   id             String        @id @default(uuid()) @db.Uuid
   conversationId String        @db.Uuid
   senderId       String        @db.Uuid
+  replyToMessageId String?     @db.Uuid
   type           MessageType   @default(TEXT)
   /// Populated when type = TEXT
   text           String?
@@ -77,9 +78,12 @@ model Message {
   createdAt      DateTime      @default(now())
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  replyToMessage Message?    @relation("MessageReplyThread", fields: [replyToMessageId], references: [id], onDelete: SetNull)
+  replies        Message[]   @relation("MessageReplyThread")
   sender       User         @relation(fields: [senderId], references: [id])
 
   @@index([conversationId, createdAt])
+  @@index([replyToMessageId])
 }
 
 /// Tracks the last time each participant read a conversation —

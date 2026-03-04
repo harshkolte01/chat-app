@@ -16,7 +16,18 @@ export type SocketMessage = {
   type: ChatMessageType;
   text: string | null;
   imageKey: string | null;
+  replyTo: SocketReplyMessage | null;
   status: ChatMessageStatus;
+  createdAt: string;
+};
+
+export type SocketReplyMessage = {
+  id: string;
+  senderId: string;
+  senderUsername: string;
+  type: ChatMessageType;
+  text: string | null;
+  imageKey: string | null;
   createdAt: string;
 };
 
@@ -26,6 +37,7 @@ export type SendMessagePayload = {
   text?: string;
   imageKey?: string;
   imageUrl?: string;
+  replyToMessageId?: string;
   clientMessageId?: string;
 };
 

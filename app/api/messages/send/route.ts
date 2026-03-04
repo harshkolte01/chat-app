@@ -9,10 +9,17 @@ type SendMessageBody = {
   text?: string;
   imageUrl?: string;
   imageKey?: string;
+  replyToMessageId?: string;
 };
 
 const MAX_TEXT_LENGTH = 4000;
 const MAX_IMAGE_REF_LENGTH = 4000;
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isUuid(value: string): boolean {
+  return UUID_PATTERN.test(value);
+}
 
 export async function POST(request: NextRequest) {
   const currentUser = await getCurrentUserFromRequest(request);
@@ -28,9 +35,14 @@ export async function POST(request: NextRequest) {
   const conversationId = body.conversationId?.trim();
   const text = body.text?.trim() ?? "";
   const imageRef = body.imageUrl?.trim() || body.imageKey?.trim() || "";
+  const replyToMessageId = body.replyToMessageId?.trim() || null;
 
   if (!conversationId) {
     return fail(400, "MISSING_FIELDS", "conversationId is required.");
+  }
+
+  if (replyToMessageId && !isUuid(replyToMessageId)) {
+    return fail(400, "INVALID_REPLY_TARGET", "replyToMessageId must be a valid UUID.");
   }
 
   const hasText = text.length > 0;
@@ -64,11 +76,32 @@ export async function POST(request: NextRequest) {
     return fail(403, "FORBIDDEN", "You do not have access to this conversation.");
   }
 
+  if (replyToMessageId) {
+    const replyTarget = await prisma.message.findFirst({
+      where: {
+        id: replyToMessageId,
+        conversationId,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!replyTarget) {
+      return fail(
+        400,
+        "INVALID_REPLY_TARGET",
+        "replyToMessageId must reference a message in the same conversation.",
+      );
+    }
+  }
+
   const now = new Date();
   const message = await prisma.message.create({
     data: {
       conversationId,
       senderId: currentUser.id,
+      replyToMessageId,
       type: hasText ? "TEXT" : "IMAGE",
       text: hasText ? text : null,
       imageKey: hasImage ? imageRef : null,
@@ -80,6 +113,21 @@ export async function POST(request: NextRequest) {
       type: true,
       text: true,
       imageKey: true,
+      replyToMessage: {
+        select: {
+          id: true,
+          senderId: true,
+          type: true,
+          text: true,
+          imageKey: true,
+          createdAt: true,
+          sender: {
+            select: {
+              username: true,
+            },
+          },
+        },
+      },
       status: true,
       createdAt: true,
     },
@@ -105,7 +153,24 @@ export async function POST(request: NextRequest) {
   return ok(
     {
       message: {
-        ...message,
+        id: message.id,
+        conversationId: message.conversationId,
+        senderId: message.senderId,
+        type: message.type,
+        text: message.text,
+        imageKey: message.imageKey,
+        replyTo: message.replyToMessage
+          ? {
+              id: message.replyToMessage.id,
+              senderId: message.replyToMessage.senderId,
+              senderUsername: message.replyToMessage.sender.username,
+              type: message.replyToMessage.type,
+              text: message.replyToMessage.text,
+              imageKey: message.replyToMessage.imageKey,
+              createdAt: message.replyToMessage.createdAt.toISOString(),
+            }
+          : null,
+        status: message.status,
         createdAt: message.createdAt.toISOString(),
       },
       sender: serializePublicUser(currentUser),

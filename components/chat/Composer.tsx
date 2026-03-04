@@ -291,7 +291,6 @@ export function Composer({
 
       if (!input) {
         onDraftChange(`${baseDraft}${emoji}`);
-        setEmojiPickerOpen(false);
         return;
       }
 
@@ -301,7 +300,6 @@ export function Composer({
         baseDraft.slice(0, selectionStart) + emoji + baseDraft.slice(selectionEnd);
 
       onDraftChange(nextDraft);
-      setEmojiPickerOpen(false);
       clearShortcodeSuggestions();
 
       requestAnimationFrame(() => {

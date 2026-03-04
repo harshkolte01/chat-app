@@ -1,9 +1,16 @@
 "use client";
 
-import { RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { CSSProperties, RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 type EmojiDataRecord = Record<string, unknown>;
 type EmojiMartPickerConstructor = new (props: EmojiMartPickerProps) => HTMLElement;
+type DesktopPopoverPosition = {
+  left: number;
+  top: number;
+  width: number;
+  placeBelow: boolean;
+};
 
 type EmojiPickerSelection = {
   native?: string;
@@ -18,6 +25,7 @@ type EmojiMartPickerProps = {
   searchPosition: "sticky";
   navPosition: "bottom";
   maxFrequentRows: number;
+  dynamicWidth: boolean;
 };
 
 type EmojiPickerProps = {
@@ -26,6 +34,31 @@ type EmojiPickerProps = {
   onSelect: (emoji: string) => void;
   onClose: () => void;
 };
+
+const DESKTOP_PICKER_WIDTH = 352;
+const DESKTOP_PICKER_HEIGHT = 435;
+const VIEWPORT_MARGIN = 8;
+const PICKER_OFFSET = 8;
+
+function getDesktopPopoverPosition(anchor: HTMLElement): DesktopPopoverPosition {
+  const rect = anchor.getBoundingClientRect();
+  const width = Math.min(DESKTOP_PICKER_WIDTH, window.innerWidth - VIEWPORT_MARGIN * 2);
+
+  let left = rect.right - width;
+  left = Math.max(VIEWPORT_MARGIN, Math.min(left, window.innerWidth - VIEWPORT_MARGIN - width));
+
+  const spaceAbove = rect.top - VIEWPORT_MARGIN;
+  const spaceBelow = window.innerHeight - rect.bottom - VIEWPORT_MARGIN;
+  const placeBelow = spaceAbove < DESKTOP_PICKER_HEIGHT && spaceBelow > spaceAbove;
+  const top = placeBelow ? rect.bottom + PICKER_OFFSET : rect.top - PICKER_OFFSET;
+
+  return {
+    left,
+    top,
+    width,
+    placeBelow,
+  };
+}
 
 function resolveEmojiData(moduleData: unknown): EmojiDataRecord | null {
   if (moduleData && typeof moduleData === "object") {
@@ -66,6 +99,7 @@ export function EmojiPicker({ open, anchorRef, onSelect, onClose }: EmojiPickerP
   const [pickerConstructor, setPickerConstructor] = useState<EmojiMartPickerConstructor | null>(
     null,
   );
+  const [desktopPosition, setDesktopPosition] = useState<DesktopPopoverPosition | null>(null);
 
   useEffect(() => {
     if (!open || emojiData || loadError) {
@@ -145,6 +179,36 @@ export function EmojiPicker({ open, anchorRef, onSelect, onClose }: EmojiPickerP
     [onSelect],
   );
 
+  const updateDesktopPosition = useCallback(() => {
+    const anchor = anchorRef.current;
+    if (!anchor || typeof window === "undefined") {
+      setDesktopPosition(null);
+      return;
+    }
+
+    setDesktopPosition(getDesktopPopoverPosition(anchor));
+  }, [anchorRef]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    updateDesktopPosition();
+
+    const handleViewportChange = () => {
+      updateDesktopPosition();
+    };
+
+    window.addEventListener("resize", handleViewportChange);
+    window.addEventListener("scroll", handleViewportChange, true);
+
+    return () => {
+      window.removeEventListener("resize", handleViewportChange);
+      window.removeEventListener("scroll", handleViewportChange, true);
+    };
+  }, [open, updateDesktopPosition]);
+
   useEffect(() => {
     if (!open || !emojiData || !pickerConstructor) {
       return;
@@ -159,6 +223,7 @@ export function EmojiPicker({ open, anchorRef, onSelect, onClose }: EmojiPickerP
       searchPosition: "sticky",
       navPosition: "bottom",
       maxFrequentRows: 2,
+      dynamicWidth: true,
     };
 
     const desktopHost = desktopPickerHostRef.current;
@@ -183,7 +248,7 @@ export function EmojiPicker({ open, anchorRef, onSelect, onClose }: EmojiPickerP
       desktopPicker?.remove();
       mobilePicker?.remove();
     };
-  }, [emojiData, handleEmojiSelect, open, pickerConstructor]);
+  }, [desktopPosition, emojiData, handleEmojiSelect, open, pickerConstructor]);
 
   useEffect(() => {
     if (!open) {
@@ -236,6 +301,25 @@ export function EmojiPicker({ open, anchorRef, onSelect, onClose }: EmojiPickerP
     </div>
   );
   const showPickerHost = Boolean(emojiData && pickerConstructor && !loadError);
+  const desktopPopoverStyle: CSSProperties | undefined = desktopPosition
+    ? {
+        left: desktopPosition.left,
+        top: desktopPosition.top,
+        width: desktopPosition.width,
+        transform: desktopPosition.placeBelow ? "none" : "translateY(-100%)",
+      }
+    : undefined;
+  const desktopPickerNode = (
+    <div
+      ref={desktopPickerRef}
+      className="fixed z-[70] hidden sm:block"
+      style={desktopPopoverStyle}
+    >
+      <div className="overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-[0_20px_48px_rgba(17,17,17,0.18)]">
+        {showPickerHost ? <div ref={desktopPickerHostRef} className="w-full" /> : pickerFallbackElement}
+      </div>
+    </div>
+  );
 
   return (
     <>
@@ -245,11 +329,9 @@ export function EmojiPicker({ open, anchorRef, onSelect, onClose }: EmojiPickerP
         onClick={onClose}
       />
 
-      <div ref={desktopPickerRef} className="absolute bottom-full right-0 z-50 mb-2 hidden sm:block">
-        <div className="overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-[0_20px_48px_rgba(17,17,17,0.18)]">
-          {showPickerHost ? <div ref={desktopPickerHostRef} /> : pickerFallbackElement}
-        </div>
-      </div>
+      {typeof document !== "undefined" && desktopPosition
+        ? createPortal(desktopPickerNode, document.body)
+        : null}
 
       <div className="fixed inset-x-0 bottom-0 z-50 sm:hidden">
         <div
@@ -271,7 +353,7 @@ export function EmojiPicker({ open, anchorRef, onSelect, onClose }: EmojiPickerP
             </button>
           </div>
           <div className="max-h-[60vh] overflow-y-auto pb-4">
-            {showPickerHost ? <div ref={mobilePickerHostRef} /> : pickerFallbackElement}
+            {showPickerHost ? <div ref={mobilePickerHostRef} className="w-full" /> : pickerFallbackElement}
           </div>
         </div>
       </div>

@@ -4,6 +4,7 @@ import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useSta
 import { useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
 import { PublicUser } from "@/lib/auth/current-user";
+import { Composer } from "@/components/chat/Composer";
 import {
   ChatMessageStatusUpdatedEvent,
   ChatNewMessageEvent,
@@ -384,7 +385,6 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   const selectedConversationIdRef = useRef<string | null>(null);
   const lastReadEventRef = useRef<string | null>(null);
   const messageScrollRef = useRef<HTMLDivElement | null>(null);
-  const imagePickerInputRef = useRef<HTMLInputElement | null>(null);
   const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
 
@@ -1475,58 +1475,17 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
               })}
             </div>
 
-            <form
-              onSubmit={onSendMessage}
-              className="mt-2 flex flex-col gap-2 border-t border-stone-200 pt-3 sm:flex-row sm:items-center"
-            >
-              <input
-                ref={imagePickerInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={onImageSelected}
-              />
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => imagePickerInputRef.current?.click()}
-                  disabled={
-                    !selectedConversationId || uploadingImage || sendingMessage || cameraStarting
-                  }
-                  className="rounded-xl border border-stone-300 bg-white px-3 py-2 text-xs font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-200"
-                >
-                  {uploadingImage ? "Uploading..." : "Photo"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void openCameraModal()}
-                  disabled={
-                    !selectedConversationId || uploadingImage || sendingMessage || cameraStarting
-                  }
-                  className="rounded-xl border border-stone-300 bg-white px-3 py-2 text-xs font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-200"
-                >
-                  {cameraStarting ? "Opening..." : "Camera"}
-                </button>
-              </div>
-              <input
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                placeholder={
-                  selectedConversationId
-                    ? "Type a private message"
-                    : "Start or select a conversation first"
-                }
-                className="w-full flex-1 rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
-                disabled={!selectedConversationId || sendingMessage || uploadingImage}
-              />
-              <button
-                type="submit"
-                disabled={!selectedConversationId || sendingMessage || uploadingImage || !draft.trim()}
-                className="rounded-xl border border-stone-300 bg-amber-100 px-4 py-2 text-sm font-semibold text-black transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-stone-200"
-              >
-                {sendingMessage ? "Sending..." : "Send"}
-              </button>
-            </form>
+            <Composer
+              draft={draft}
+              selectedConversationId={selectedConversationId}
+              sendingMessage={sendingMessage}
+              uploadingImage={uploadingImage}
+              cameraStarting={cameraStarting}
+              onDraftChange={setDraft}
+              onSendMessage={onSendMessage}
+              onImageSelected={onImageSelected}
+              onOpenCamera={openCameraModal}
+            />
           </section>
         </div>
 

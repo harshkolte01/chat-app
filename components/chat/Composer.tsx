@@ -1,7 +1,25 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useCallback, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 import { EmojiPicker } from "@/components/chat/EmojiPicker";
+
+type EmojiDataRecord = Record<string, unknown>;
+type EmojiSearchIndex = {
+  search: (value: string, options?: { maxResults?: number; caller?: string }) => Promise<unknown[]>;
+};
+
+type ShortcodeToken = {
+  start: number;
+  end: number;
+  query: string;
+};
+
+type EmojiSuggestion = {
+  id: string;
+  native: string;
+  name: string;
+  shortcode: string;
+};
 
 type ComposerProps = {
   draft: string;
@@ -14,6 +32,117 @@ type ComposerProps = {
   onImageSelected: (event: ChangeEvent<HTMLInputElement>) => void | Promise<void>;
   onOpenCamera: () => void | Promise<void>;
 };
+
+const SHORTCODE_QUERY_PATTERN = /(^|[\s([{]):([a-z0-9_+-]{2,32})$/i;
+const MAX_SHORTCODE_RESULTS = 7;
+
+function resolveEmojiData(moduleData: unknown): EmojiDataRecord | null {
+  if (!moduleData || typeof moduleData !== "object") {
+    return null;
+  }
+
+  if (
+    "default" in moduleData &&
+    moduleData.default &&
+    typeof moduleData.default === "object"
+  ) {
+    return moduleData.default as EmojiDataRecord;
+  }
+
+  return moduleData as EmojiDataRecord;
+}
+
+function parseShortcodeToken(value: string, caretPosition: number): ShortcodeToken | null {
+  if (caretPosition < 0 || caretPosition > value.length) {
+    return null;
+  }
+
+  const beforeCaret = value.slice(0, caretPosition);
+  const match = beforeCaret.match(SHORTCODE_QUERY_PATTERN);
+  if (!match) {
+    return null;
+  }
+
+  const query = match[2];
+  const start = beforeCaret.length - query.length - 1;
+  return {
+    start,
+    end: caretPosition,
+    query,
+  };
+}
+
+function normalizeShortcode(shortcodeValue: unknown, fallback: string): string {
+  if (typeof shortcodeValue === "string") {
+    const normalized = shortcodeValue.replace(/^:+|:+$/g, "").trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  if (Array.isArray(shortcodeValue)) {
+    const firstCode = shortcodeValue.find((entry) => typeof entry === "string");
+    if (typeof firstCode === "string") {
+      const normalized = firstCode.replace(/^:+|:+$/g, "").trim();
+      if (normalized) {
+        return normalized;
+      }
+    }
+  }
+
+  return fallback;
+}
+
+function toEmojiSuggestions(results: unknown[]): EmojiSuggestion[] {
+  const mapped: EmojiSuggestion[] = [];
+  const seen = new Set<string>();
+
+  for (const result of results) {
+    if (!result || typeof result !== "object") {
+      continue;
+    }
+
+    const candidate = result as {
+      id?: unknown;
+      name?: unknown;
+      shortcodes?: unknown;
+      skins?: unknown;
+    };
+    const id = typeof candidate.id === "string" && candidate.id.length > 0 ? candidate.id : null;
+    const name = typeof candidate.name === "string" && candidate.name.length > 0 ? candidate.name : id;
+    if (!id || !name) {
+      continue;
+    }
+
+    if (!Array.isArray(candidate.skins) || candidate.skins.length === 0) {
+      continue;
+    }
+
+    const firstSkin = candidate.skins[0];
+    if (!firstSkin || typeof firstSkin !== "object") {
+      continue;
+    }
+
+    const native = (firstSkin as { native?: unknown }).native;
+    if (typeof native !== "string" || native.length === 0) {
+      continue;
+    }
+
+    if (seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+
+    mapped.push({
+      id,
+      native,
+      name,
+      shortcode: normalizeShortcode(candidate.shortcodes, id),
+    });
+  }
+
+  return mapped;
+}
 
 export function Composer({
   draft,
@@ -30,11 +159,130 @@ export function Composer({
   const textInputRef = useRef<HTMLInputElement | null>(null);
   const emojiButtonRef = useRef<HTMLButtonElement | null>(null);
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
+  const [shortcodeToken, setShortcodeToken] = useState<ShortcodeToken | null>(null);
+  const [shortcodeSuggestions, setShortcodeSuggestions] = useState<EmojiSuggestion[]>([]);
+  const [highlightedSuggestionIndex, setHighlightedSuggestionIndex] = useState(0);
+  const searchIndexRef = useRef<EmojiSearchIndex | null>(null);
+  const searchInitPromiseRef = useRef<Promise<void> | null>(null);
 
   const isComposerDisabled = !selectedConversationId || sendingMessage || uploadingImage;
   const areActionButtonsDisabled =
     !selectedConversationId || uploadingImage || sendingMessage || cameraStarting;
   const isEmojiPickerVisible = emojiPickerOpen && !isComposerDisabled;
+  const showShortcodeSuggestions =
+    !isComposerDisabled &&
+    !isEmojiPickerVisible &&
+    shortcodeToken !== null &&
+    shortcodeSuggestions.length > 0;
+
+  const clearShortcodeSuggestions = useCallback(() => {
+    setShortcodeToken(null);
+    setShortcodeSuggestions([]);
+    setHighlightedSuggestionIndex(0);
+  }, []);
+
+  const updateShortcodeToken = useCallback(
+    (value: string, caretPosition: number | null) => {
+      if (isComposerDisabled || caretPosition === null) {
+        clearShortcodeSuggestions();
+        return;
+      }
+
+      const parsedToken = parseShortcodeToken(value, caretPosition);
+      if (!parsedToken) {
+        clearShortcodeSuggestions();
+        return;
+      }
+
+      setShortcodeToken(parsedToken);
+    },
+    [clearShortcodeSuggestions, isComposerDisabled],
+  );
+
+  const ensureEmojiSearchReady = useCallback(async () => {
+    if (searchIndexRef.current) {
+      return;
+    }
+
+    if (searchInitPromiseRef.current) {
+      return searchInitPromiseRef.current;
+    }
+
+    searchInitPromiseRef.current = (async () => {
+      const [dataModule, emojiMartModule] = await Promise.all([
+        import("@emoji-mart/data"),
+        import("emoji-mart"),
+      ]);
+      const data = resolveEmojiData(dataModule);
+      const init = (emojiMartModule as { init?: unknown }).init;
+      const searchIndex = (emojiMartModule as { SearchIndex?: unknown }).SearchIndex;
+
+      if (!data || typeof init !== "function") {
+        throw new Error("Emoji search initialization failed.");
+      }
+
+      if (
+        !searchIndex ||
+        typeof searchIndex !== "object" ||
+        typeof (searchIndex as EmojiSearchIndex).search !== "function"
+      ) {
+        throw new Error("Emoji search is unavailable.");
+      }
+
+      await Promise.resolve((init as (options: { data: EmojiDataRecord }) => void | Promise<void>)({ data }));
+      searchIndexRef.current = searchIndex as EmojiSearchIndex;
+    })();
+
+    try {
+      await searchInitPromiseRef.current;
+    } finally {
+      if (!searchIndexRef.current) {
+        searchInitPromiseRef.current = null;
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!shortcodeToken || isComposerDisabled || isEmojiPickerVisible) {
+      setShortcodeSuggestions([]);
+      setHighlightedSuggestionIndex(0);
+      return;
+    }
+
+    let canceled = false;
+
+    void ensureEmojiSearchReady()
+      .then(async () => {
+        if (canceled || !searchIndexRef.current) {
+          return;
+        }
+
+        const searchResults = await searchIndexRef.current.search(shortcodeToken.query, {
+          maxResults: MAX_SHORTCODE_RESULTS,
+          caller: "chat-composer-shortcode",
+        });
+        if (canceled) {
+          return;
+        }
+
+        const nextSuggestions = toEmojiSuggestions(searchResults).slice(0, MAX_SHORTCODE_RESULTS);
+        setShortcodeSuggestions(nextSuggestions);
+        setHighlightedSuggestionIndex((previous) =>
+          nextSuggestions.length === 0 ? 0 : Math.min(previous, nextSuggestions.length - 1),
+        );
+      })
+      .catch(() => {
+        if (canceled) {
+          return;
+        }
+        setShortcodeSuggestions([]);
+        setHighlightedSuggestionIndex(0);
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [ensureEmojiSearchReady, isComposerDisabled, isEmojiPickerVisible, shortcodeToken]);
 
   const handleEmojiSelect = useCallback(
     (emoji: string) => {
@@ -54,6 +302,7 @@ export function Composer({
 
       onDraftChange(nextDraft);
       setEmojiPickerOpen(false);
+      clearShortcodeSuggestions();
 
       requestAnimationFrame(() => {
         const currentInput = textInputRef.current;
@@ -66,13 +315,88 @@ export function Composer({
         currentInput.setSelectionRange(nextCaretPosition, nextCaretPosition);
       });
     },
-    [draft, onDraftChange],
+    [clearShortcodeSuggestions, draft, onDraftChange],
+  );
+
+  const applyShortcodeSuggestion = useCallback(
+    (suggestion: EmojiSuggestion) => {
+      if (!shortcodeToken) {
+        return;
+      }
+
+      const prefix = draft.slice(0, shortcodeToken.start);
+      const suffix = draft.slice(shortcodeToken.end);
+      const shouldAddTrailingSpace = suffix.length === 0 || !/^\s/.test(suffix);
+      const insertion = `${suggestion.native}${shouldAddTrailingSpace ? " " : ""}`;
+      const nextDraft = `${prefix}${insertion}${suffix}`;
+      const nextCaretPosition = prefix.length + insertion.length;
+
+      onDraftChange(nextDraft);
+      clearShortcodeSuggestions();
+
+      requestAnimationFrame(() => {
+        const currentInput = textInputRef.current;
+        if (!currentInput || currentInput.disabled) {
+          return;
+        }
+
+        currentInput.focus();
+        currentInput.setSelectionRange(nextCaretPosition, nextCaretPosition);
+      });
+    },
+    [clearShortcodeSuggestions, draft, onDraftChange, shortcodeToken],
+  );
+
+  const onInputKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLInputElement>) => {
+      if (!showShortcodeSuggestions) {
+        return;
+      }
+
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setHighlightedSuggestionIndex((previous) => (previous + 1) % shortcodeSuggestions.length);
+        return;
+      }
+
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setHighlightedSuggestionIndex(
+          (previous) => (previous - 1 + shortcodeSuggestions.length) % shortcodeSuggestions.length,
+        );
+        return;
+      }
+
+      if (event.key === "Enter" || event.key === "Tab") {
+        const suggestion = shortcodeSuggestions[highlightedSuggestionIndex];
+        if (!suggestion) {
+          return;
+        }
+
+        event.preventDefault();
+        applyShortcodeSuggestion(suggestion);
+        return;
+      }
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        clearShortcodeSuggestions();
+      }
+    },
+    [
+      applyShortcodeSuggestion,
+      clearShortcodeSuggestions,
+      highlightedSuggestionIndex,
+      shortcodeSuggestions,
+      showShortcodeSuggestions,
+    ],
   );
 
   return (
     <form
       onSubmit={(event) => {
         setEmojiPickerOpen(false);
+        clearShortcodeSuggestions();
         void onSendMessage(event);
       }}
       className="mt-2 flex flex-col gap-2 border-t border-stone-200 pt-3 sm:flex-row sm:items-center"
@@ -92,6 +416,7 @@ export function Composer({
           type="button"
           onClick={() => {
             setEmojiPickerOpen(false);
+            clearShortcodeSuggestions();
             imagePickerInputRef.current?.click();
           }}
           disabled={areActionButtonsDisabled}
@@ -104,6 +429,7 @@ export function Composer({
           type="button"
           onClick={() => {
             setEmojiPickerOpen(false);
+            clearShortcodeSuggestions();
             void onOpenCamera();
           }}
           disabled={areActionButtonsDisabled}
@@ -116,7 +442,10 @@ export function Composer({
           <button
             ref={emojiButtonRef}
             type="button"
-            onClick={() => setEmojiPickerOpen((previous) => !previous)}
+            onClick={() => {
+              clearShortcodeSuggestions();
+              setEmojiPickerOpen((previous) => !previous);
+            }}
             disabled={isComposerDisabled}
             aria-label="Open emoji picker"
             aria-haspopup="dialog"
@@ -149,18 +478,53 @@ export function Composer({
         </div>
       </div>
 
-      <input
-        ref={textInputRef}
-        value={draft}
-        onChange={(event) => onDraftChange(event.target.value)}
-        placeholder={
-          selectedConversationId
-            ? "Type a private message"
-            : "Start or select a conversation first"
-        }
-        className="w-full flex-1 rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
-        disabled={isComposerDisabled}
-      />
+      <div className="relative w-full flex-1">
+        {showShortcodeSuggestions ? (
+          <div className="absolute bottom-[calc(100%+0.375rem)] left-0 right-0 z-[80] overflow-hidden rounded-xl border border-stone-300 bg-white shadow-[0_14px_30px_rgba(17,17,17,0.12)]">
+            {shortcodeSuggestions.map((suggestion, index) => (
+              <button
+                key={`${suggestion.id}-${suggestion.shortcode}`}
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => applyShortcodeSuggestion(suggestion)}
+                className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-black transition ${
+                  index === highlightedSuggestionIndex ? "bg-amber-100" : "hover:bg-stone-100"
+                }`}
+              >
+                <span className="text-xl leading-none">{suggestion.native}</span>
+                <span className="truncate text-sm">{suggestion.name}</span>
+                <span className="ml-auto text-xs font-medium text-black/65">
+                  :{suggestion.shortcode}:
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        <input
+          ref={textInputRef}
+          value={draft}
+          onChange={(event) => {
+            const nextDraft = event.target.value;
+            onDraftChange(nextDraft);
+            updateShortcodeToken(nextDraft, event.target.selectionStart ?? nextDraft.length);
+          }}
+          onClick={(event) =>
+            updateShortcodeToken(event.currentTarget.value, event.currentTarget.selectionStart)
+          }
+          onKeyUp={(event) =>
+            updateShortcodeToken(event.currentTarget.value, event.currentTarget.selectionStart)
+          }
+          onKeyDown={onInputKeyDown}
+          placeholder={
+            selectedConversationId
+              ? "Type a private message (use :sm for emoji)"
+              : "Start or select a conversation first"
+          }
+          className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
+          disabled={isComposerDisabled}
+        />
+      </div>
 
       <button
         type="submit"

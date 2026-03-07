@@ -1,6 +1,15 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChangeEvent,
+  FormEvent,
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
 import { PublicUser } from "@/lib/auth/current-user";
@@ -95,6 +104,10 @@ type ReadMessagesResponse = {
   readAt: string;
 };
 
+type UpdateProfileResponse = {
+  user: PublicUser;
+};
+
 type PresignUploadResponse = {
   uploadUrl: string;
   fileUrl: string;
@@ -122,6 +135,8 @@ const POLL_BACKOFF_MAX_MS = 60_000;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const USERNAME_PATTERN = /^[a-zA-Z0-9_]{3,32}$/;
+const MIN_PASSWORD_LENGTH = 8;
 
 function isUuid(value: string): boolean {
   return UUID_PATTERN.test(value);
@@ -257,6 +272,63 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   }
 
   return payload as T;
+}
+
+function syncMessagesWithProfileUpdate(previous: Message[], nextUser: PublicUser): Message[] {
+  return previous.map((message) => {
+    const sender = message.senderId === nextUser.id ? nextUser : message.sender;
+    const replyTo =
+      message.replyTo && message.replyTo.senderId === nextUser.id
+        ? {
+            ...message.replyTo,
+            senderUsername: nextUser.username,
+          }
+        : message.replyTo;
+
+    if (sender === message.sender && replyTo === message.replyTo) {
+      return message;
+    }
+
+    return {
+      ...message,
+      sender,
+      replyTo,
+    };
+  });
+}
+
+function formatJoinedDate(value: string): string {
+  return new Date(value).toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+}
+
+function SettingsIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={className}
+    >
+      <path d="M12 3.75v1.5" />
+      <path d="M18.54 5.46l-1.06 1.06" />
+      <path d="M20.25 12h-1.5" />
+      <path d="M18.54 18.54l-1.06-1.06" />
+      <path d="M12 18.75v1.5" />
+      <path d="M6.52 17.48l-1.06 1.06" />
+      <path d="M5.25 12h-1.5" />
+      <path d="M6.52 6.52L5.46 5.46" />
+      <circle cx="12" cy="12" r="3.25" />
+      <circle cx="12" cy="12" r="7.25" />
+    </svg>
+  );
 }
 
 function toPublicUser(user: SocketPublicUser): PublicUser {
@@ -548,7 +620,7 @@ function emitReadMessageWithAck(socket: SocketClient, payload: MessageReadPayloa
   });
 }
 
-export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
+export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: PublicUser }) {
   const router = useRouter();
   const socketRef = useRef<SocketClient | null>(null);
   const selectedConversationIdRef = useRef<string | null>(null);
@@ -560,6 +632,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
 
+  const [accountUser, setAccountUser] = useState(initialCurrentUser);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -580,6 +653,15 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   const [directorySearchMessage, setDirectorySearchMessage] = useState<string | null>(null);
   const [searchingDirectoryUser, setSearchingDirectoryUser] = useState(false);
   const [creatingConversation, setCreatingConversation] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileUsername, setProfileUsername] = useState(initialCurrentUser.username);
+  const [profileEmail, setProfileEmail] = useState(initialCurrentUser.email);
+  const [profileCurrentPassword, setProfileCurrentPassword] = useState("");
+  const [profileNewPassword, setProfileNewPassword] = useState("");
+  const [profileConfirmPassword, setProfileConfirmPassword] = useState("");
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [profileSuccess, setProfileSuccess] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPageVisible, setIsPageVisible] = useState(
     () => (typeof document === "undefined" ? true : document.visibilityState === "visible"),
@@ -606,6 +688,14 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
         ? "polling fallback active"
         : "paused (tab hidden)"
       : "offline";
+  const memberSinceLabel = formatJoinedDate(accountUser.createdAt);
+  const normalizedProfileEmail = normalizeEmail(profileEmail);
+  const profileHasChanges =
+    profileUsername.trim() !== accountUser.username ||
+    normalizedProfileEmail !== accountUser.email ||
+    profileCurrentPassword.length > 0 ||
+    profileNewPassword.length > 0 ||
+    profileConfirmPassword.length > 0;
 
   const selectConversation = useCallback((conversationId: string) => {
     allowAutoSelectConversationRef.current = true;
@@ -619,6 +709,30 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     setNextCursor(null);
     setMessagePanelFullscreen(false);
   }, []);
+
+  const openProfilePanel = useCallback(() => {
+    setProfileUsername(accountUser.username);
+    setProfileEmail(accountUser.email);
+    setProfileCurrentPassword("");
+    setProfileNewPassword("");
+    setProfileConfirmPassword("");
+    setProfileError(null);
+    setProfileSuccess(null);
+    setProfileOpen(true);
+  }, [accountUser.email, accountUser.username]);
+
+  const closeProfilePanel = useCallback(() => {
+    if (savingProfile) {
+      return;
+    }
+
+    setProfileOpen(false);
+    setProfileCurrentPassword("");
+    setProfileNewPassword("");
+    setProfileConfirmPassword("");
+    setProfileError(null);
+    setProfileSuccess(null);
+  }, [savingProfile]);
 
   const showDesktopNotification = useCallback((params: {
     conversationId: string;
@@ -874,8 +988,8 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     const optimisticMessage: Message = {
       id: clientMessageId,
       conversationId,
-      senderId: currentUser.id,
-      sender: currentUser,
+      senderId: accountUser.id,
+      sender: accountUser,
       type: "TEXT",
       text,
       imageKey: null,
@@ -999,8 +1113,8 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     const optimisticMessage: Message = {
       id: clientMessageId,
       conversationId,
-      senderId: currentUser.id,
-      sender: currentUser,
+      senderId: accountUser.id,
+      sender: accountUser,
       type: "IMAGE",
       text: null,
       imageKey: imageUrl,
@@ -1255,6 +1369,112 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     }
   }
 
+  async function onSaveProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (savingProfile) {
+      return;
+    }
+
+    const nextUsername = profileUsername.trim();
+    const nextEmail = normalizeEmail(profileEmail);
+    const currentPassword = profileCurrentPassword;
+    const newPassword = profileNewPassword;
+    const confirmPassword = profileConfirmPassword;
+    const passwordFieldsTouched =
+      currentPassword.length > 0 || newPassword.length > 0 || confirmPassword.length > 0;
+
+    setProfileError(null);
+    setProfileSuccess(null);
+
+    if (!nextUsername || !USERNAME_PATTERN.test(nextUsername)) {
+      setProfileError("Username must be 3-32 chars and use letters, numbers, or underscore.");
+      return;
+    }
+
+    if (!nextEmail || !EMAIL_PATTERN.test(nextEmail)) {
+      setProfileError("Enter a valid email address.");
+      return;
+    }
+
+    if (passwordFieldsTouched) {
+      if (!currentPassword) {
+        setProfileError("Enter your current password to set a new one.");
+        return;
+      }
+
+      if (!newPassword) {
+        setProfileError("Enter a new password.");
+        return;
+      }
+
+      if (newPassword.length < MIN_PASSWORD_LENGTH) {
+        setProfileError(`New password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+        return;
+      }
+
+      if (newPassword !== confirmPassword) {
+        setProfileError("New password and confirm password must match.");
+        return;
+      }
+    }
+
+    if (
+      nextUsername === accountUser.username &&
+      nextEmail === accountUser.email &&
+      !passwordFieldsTouched
+    ) {
+      setProfileSuccess("No changes to save.");
+      return;
+    }
+
+    setSavingProfile(true);
+
+    try {
+      const response = await fetchJson<UpdateProfileResponse>("/api/me", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          username: nextUsername,
+          email: nextEmail,
+          currentPassword: passwordFieldsTouched ? currentPassword : undefined,
+          newPassword: passwordFieldsTouched ? newPassword : undefined,
+        }),
+      });
+
+      setAccountUser(response.user);
+      setMessages((previous) => syncMessagesWithProfileUpdate(previous, response.user));
+      setReplyingTo((previous) =>
+        previous && previous.senderId === response.user.id
+          ? {
+              ...previous,
+              senderUsername: response.user.username,
+            }
+          : previous,
+      );
+      setProfileUsername(response.user.username);
+      setProfileEmail(response.user.email);
+      setProfileCurrentPassword("");
+      setProfileNewPassword("");
+      setProfileConfirmPassword("");
+      setProfileSuccess(
+        passwordFieldsTouched ? "Profile and password updated." : "Profile updated.",
+      );
+      startTransition(() => {
+        router.refresh();
+      });
+    } catch (profileUpdateError) {
+      setProfileError(
+        profileUpdateError instanceof Error
+          ? profileUpdateError.message
+          : "Failed to update profile.",
+      );
+    } finally {
+      setSavingProfile(false);
+    }
+  }
+
   async function onLogout() {
     const socket = socketRef.current;
     if (socket) {
@@ -1291,6 +1511,23 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
       void desktop.stopFlashWindow();
     }
   }, [totalUnreadCount]);
+
+  useEffect(() => {
+    if (!profileOpen || typeof window === "undefined") {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeProfilePanel();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [closeProfilePanel, profileOpen]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined") {
@@ -1553,7 +1790,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
           const incomingMessage = toMessageFromSocket(payload);
           const activeConversationId = selectedConversationIdRef.current;
           const shouldTreatAsUnread =
-            incomingMessage.senderId !== currentUser.id &&
+            incomingMessage.senderId !== accountUser.id &&
             !isConversationActivelyViewed(incomingMessage.conversationId);
           const latestUnreadMessage = toConversationUnreadMessage(
             incomingMessage,
@@ -1614,7 +1851,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
       }
     };
   }, [
-    currentUser.id,
+    accountUser.id,
     desktopShell,
     isConversationActivelyViewed,
     loadConversations,
@@ -1648,13 +1885,13 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     void markConversationRead(payload)
       .then(() => {
         setMessages((previous) =>
-          markMessagesReadLocally(previous, selectedConversationId, currentUser.id, newestMessage.createdAt),
+          markMessagesReadLocally(previous, selectedConversationId, accountUser.id, newestMessage.createdAt),
         );
         setConversations((previous) =>
           clearConversationUnreadState(
             previous,
             selectedConversationId,
-            currentUser.id,
+            accountUser.id,
             newestMessage.createdAt,
           ),
         );
@@ -1664,7 +1901,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
           lastReadEventRef.current = null;
         }
       });
-  }, [currentUser.id, markConversationRead, messages, selectedConversationId]);
+  }, [accountUser.id, markConversationRead, messages, selectedConversationId]);
 
   useEffect(() => {
     const container = messageScrollRef.current;
@@ -1686,19 +1923,29 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
           <div>
             <BrandMark size="sm" priority subtitle="Private workspace" />
             <p className="mt-3 text-sm text-black/70">
-              Signed in as {currentUser.username} ({currentUser.email})
+              Signed in as {accountUser.username} ({accountUser.email})
             </p>
             <p className="text-xs font-medium uppercase tracking-wide text-black/55">
               Realtime: {realtimeStatus}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={onLogout}
-            className="w-full rounded-xl border border-stone-300 bg-amber-100 px-3 py-2 text-sm font-semibold text-black transition hover:bg-amber-200 sm:w-auto"
-          >
-            Logout
-          </button>
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+            <button
+              type="button"
+              onClick={openProfilePanel}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-semibold text-black transition hover:bg-stone-100 sm:w-auto"
+            >
+              <SettingsIcon />
+              Settings
+            </button>
+            <button
+              type="button"
+              onClick={onLogout}
+              className="w-full rounded-xl border border-stone-300 bg-amber-100 px-3 py-2 text-sm font-semibold text-black transition hover:bg-amber-200 sm:w-auto"
+            >
+              Logout
+            </button>
+          </div>
         </header>
 
         {error ? (
@@ -1868,7 +2115,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
                   ) : null}
 
                   {displayedMessages.map((message) => {
-                    const isCurrentUser = message.senderId === currentUser.id;
+                    const isCurrentUser = message.senderId === accountUser.id;
                     const normalizedImageUrl =
                       message.type === "IMAGE" && message.imageKey
                         ? normalizeMessageImageUrl(message.imageKey)
@@ -1899,7 +2146,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
                         {message.replyTo ? (
                           <div className="mb-2 rounded-lg border border-black/10 bg-white/45 px-2 py-1">
                             <p className="text-[11px] font-semibold text-black/75">
-                              {message.replyTo.senderId === currentUser.id
+                              {message.replyTo.senderId === accountUser.id
                                 ? "You"
                                 : message.replyTo.senderUsername}
                             </p>
@@ -1933,7 +2180,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
                   sendingMessage={sendingMessage}
                   uploadingImage={uploadingImage}
                   cameraStarting={cameraStarting}
-                  currentUserId={currentUser.id}
+                  currentUserId={accountUser.id}
                   replyingTo={replyingTo}
                   onDraftChange={setDraft}
                   onCancelReply={() => setReplyingTo(null)}
@@ -1957,6 +2204,216 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
             )}
           </section>
         </div>
+
+        {profileOpen ? (
+          <div
+            className="fixed inset-0 z-50 flex items-start justify-center bg-black/45 p-4 sm:items-center"
+            onClick={(event) => {
+              if (event.target === event.currentTarget) {
+                closeProfilePanel();
+              }
+            }}
+          >
+            <div className="w-full max-w-3xl overflow-hidden rounded-[28px] border border-stone-200 bg-[#fffdf7] shadow-[0_32px_90px_rgba(17,17,17,0.24)]">
+              <div className="border-b border-stone-200 bg-[linear-gradient(135deg,rgba(251,191,36,0.18),rgba(255,255,255,0.94))] px-5 py-5 sm:px-6">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-amber-700/80">
+                      Account settings
+                    </p>
+                    <h3 className="mt-2 text-2xl font-semibold tracking-tight text-black">
+                      Profile and security
+                    </h3>
+                    <p className="mt-2 max-w-2xl text-sm leading-6 text-black/65">
+                      Review your account details, update your username or email, and confirm your
+                      current password before changing it.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeProfilePanel}
+                    disabled={savingProfile}
+                    className="rounded-xl border border-stone-300 bg-white px-3 py-2 text-xs font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-100"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              <form
+                onSubmit={onSaveProfile}
+                className="grid gap-5 p-5 sm:p-6 lg:grid-cols-[260px_minmax(0,1fr)]"
+              >
+                <aside className="rounded-[24px] border border-stone-200 bg-white p-4 shadow-[0_12px_30px_rgba(17,17,17,0.06)]">
+                  <div className="rounded-[22px] border border-amber-200 bg-amber-100/80 p-4">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-amber-800/70">
+                      Active profile
+                    </p>
+                    <p className="mt-3 text-lg font-semibold text-black">{accountUser.username}</p>
+                    <p className="mt-1 break-all text-sm text-black/65">{accountUser.email}</p>
+                  </div>
+
+                  <div className="mt-4 space-y-4">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-black/45">
+                        Member since
+                      </p>
+                      <p className="mt-1 text-sm font-medium text-black">{memberSinceLabel}</p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-black/45">
+                        Security rule
+                      </p>
+                      <p className="mt-1 text-sm leading-6 text-black/65">
+                        Password changes require your current password first.
+                      </p>
+                    </div>
+                  </div>
+                </aside>
+
+                <div className="space-y-5">
+                  {profileError ? (
+                    <div className="rounded-2xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700">
+                      {profileError}
+                    </div>
+                  ) : null}
+                  {profileSuccess ? (
+                    <div className="rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                      {profileSuccess}
+                    </div>
+                  ) : null}
+
+                  <section className="rounded-[24px] border border-stone-200 bg-white p-4 shadow-[0_12px_30px_rgba(17,17,17,0.05)]">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-black/45">
+                      Profile
+                    </p>
+                    <h4 className="mt-2 text-lg font-semibold text-black">Update visible account details</h4>
+
+                    <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                      <label className="block">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-black/55">
+                          Username
+                        </span>
+                        <input
+                          type="text"
+                          value={profileUsername}
+                          onChange={(event) => {
+                            setProfileUsername(event.target.value);
+                            setProfileError(null);
+                            setProfileSuccess(null);
+                          }}
+                          autoComplete="username"
+                          className="mt-2 w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
+                        />
+                      </label>
+
+                      <label className="block">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-black/55">
+                          Email
+                        </span>
+                        <input
+                          type="email"
+                          value={profileEmail}
+                          onChange={(event) => {
+                            setProfileEmail(event.target.value);
+                            setProfileError(null);
+                            setProfileSuccess(null);
+                          }}
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          autoComplete="email"
+                          className="mt-2 w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
+                        />
+                      </label>
+                    </div>
+                  </section>
+
+                  <section className="rounded-[24px] border border-stone-200 bg-white p-4 shadow-[0_12px_30px_rgba(17,17,17,0.05)]">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-black/45">
+                      Password
+                    </p>
+                    <h4 className="mt-2 text-lg font-semibold text-black">Change password</h4>
+                    <p className="mt-2 text-sm leading-6 text-black/65">
+                      Leave these fields blank if you only want to update username or email.
+                    </p>
+
+                    <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                      <label className="block sm:col-span-2">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-black/55">
+                          Current password
+                        </span>
+                        <input
+                          type="password"
+                          value={profileCurrentPassword}
+                          onChange={(event) => {
+                            setProfileCurrentPassword(event.target.value);
+                            setProfileError(null);
+                            setProfileSuccess(null);
+                          }}
+                          autoComplete="current-password"
+                          className="mt-2 w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
+                        />
+                      </label>
+
+                      <label className="block">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-black/55">
+                          New password
+                        </span>
+                        <input
+                          type="password"
+                          value={profileNewPassword}
+                          onChange={(event) => {
+                            setProfileNewPassword(event.target.value);
+                            setProfileError(null);
+                            setProfileSuccess(null);
+                          }}
+                          autoComplete="new-password"
+                          className="mt-2 w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
+                        />
+                      </label>
+
+                      <label className="block">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-black/55">
+                          Confirm new password
+                        </span>
+                        <input
+                          type="password"
+                          value={profileConfirmPassword}
+                          onChange={(event) => {
+                            setProfileConfirmPassword(event.target.value);
+                            setProfileError(null);
+                            setProfileSuccess(null);
+                          }}
+                          autoComplete="new-password"
+                          className="mt-2 w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
+                        />
+                      </label>
+                    </div>
+                  </section>
+
+                  <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                    <button
+                      type="button"
+                      onClick={closeProfilePanel}
+                      disabled={savingProfile}
+                      className="rounded-xl border border-stone-300 bg-white px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-100"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={!profileHasChanges || savingProfile}
+                      className="rounded-xl border border-stone-300 bg-amber-100 px-4 py-2.5 text-sm font-semibold text-black transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-stone-200"
+                    >
+                      {savingProfile ? "Saving..." : "Save changes"}
+                    </button>
+                  </div>
+                </div>
+              </form>
+            </div>
+          </div>
+        ) : null}
 
         {cameraOpen ? (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">

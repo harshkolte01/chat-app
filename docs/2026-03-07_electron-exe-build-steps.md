@@ -3,22 +3,24 @@
 ## Current setup
 
 - Windows packaging is configured in `package.json`.
-- The app icon is taken directly from `public/secretchat.png`.
+- The Windows installer/exe icon is taken from `public/secretchat.ico`.
 - Packaged output is written to `release/`.
 - The Electron app currently opens the hosted app URL from `desktop-chat-app/next-app-url.cjs`, so the packaged `.exe` still needs internet access.
+- The build is pinned to the modern Electron Builder Windows toolset to avoid the legacy `winCodeSign` symlink extraction failure on Windows.
 
 ## Icon source
 
-No extra copy step is needed.
+No extra icon conversion step is needed.
 
 `package.json` is configured to use:
 
 - `build.directories.buildResources = "public"`
-- `build.win.icon = "secretchat.png"`
+- `build.win.icon = "secretchat.ico"`
+- `build.toolsets.winCodeSign = "1.1.0"`
 
 That means Electron Builder will use:
 
-- `public/secretchat.png`
+- `public/secretchat.ico`
 
 ## Build steps
 
@@ -81,7 +83,8 @@ C:\Coding\sec-chat\chat-app\release
 ## Notes
 
 - If Windows shows a SmartScreen warning, that is expected for an unsigned app.
-- If you later want the best possible Windows shell compatibility, you can convert the same logo to `.ico` and switch `build.win.icon` to that file. For now, this setup uses `public/secretchat.png` directly as requested.
+- The previous failure with `winCodeSign-2.6.0.7z` and symbolic-link extraction should be avoided by using the modern `1.1.0` Windows toolset.
+- If you still see the same legacy `winCodeSign` archive path in the next run, clear `%LOCALAPPDATA%\electron-builder\Cache\winCodeSign` once and rerun.
 - Electron Builder docs:
   - https://www.electron.build/
   - https://www.electron.build/icons

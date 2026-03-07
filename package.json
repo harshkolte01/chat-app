@@ -2,6 +2,8 @@
   "name": "chat-app",
   "version": "0.1.0",
   "private": true,
+  "description": "Secure realtime desktop and web chat for private team conversations.",
+  "author": "SecretChat",
   "main": "desktop-chat-app/main.cjs",
   "scripts": {
     "dev": "next dev",
@@ -21,6 +23,10 @@
   "build": {
     "appId": "sec-chat.desktop",
     "productName": "SecretChat",
+    "copyright": "Copyright © 2026 SecretChat",
+    "toolsets": {
+      "winCodeSign": "1.1.0"
+    },
     "directories": {
       "output": "release",
       "buildResources": "public"
@@ -34,7 +40,7 @@
         "nsis",
         "portable"
       ],
-      "icon": "secretchat.png"
+      "icon": "secretchat.ico"
     }
   },
   "dependencies": {
@@ -57,6 +63,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "electron": "^37.10.3",
+    "electron-builder": "^26.8.1",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "prisma": "^7.4.2",

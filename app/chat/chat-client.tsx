@@ -305,6 +305,61 @@ function formatJoinedDate(value: string): string {
   });
 }
 
+function formatConversationTimestamp(value: string): string {
+  const timestamp = new Date(value);
+  const now = new Date();
+
+  if (timestamp.toDateString() === now.toDateString()) {
+    return timestamp.toLocaleTimeString(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
+
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (timestamp.toDateString() === yesterday.toDateString()) {
+    return "Yesterday";
+  }
+
+  if (timestamp.getFullYear() === now.getFullYear()) {
+    return timestamp.toLocaleDateString(undefined, {
+      day: "numeric",
+      month: "short",
+    });
+  }
+
+  return timestamp.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function getUserInitials(username: string): string {
+  const parts = username
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2);
+
+  if (parts.length === 0) {
+    return "U";
+  }
+
+  return parts.map((part) => part[0]?.toUpperCase() ?? "").join("").slice(0, 2);
+}
+
+function conversationPreviewText(conversation: Conversation, currentUserId: string): string {
+  const lastMessage = conversation.lastMessage;
+  if (!lastMessage) {
+    return "No messages yet";
+  }
+
+  const prefix = lastMessage.senderId === currentUserId ? "You: " : "";
+  return `${prefix}${lastMessage.textPreview}`;
+}
+
 function SettingsIcon({ className = "h-4 w-4" }: { className?: string }) {
   return (
     <svg
@@ -2028,33 +2083,85 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
               <p className="text-sm text-black/70">No conversations yet. Start one above.</p>
             ) : null}
 
-            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
               {conversations.map((conversation) => (
                 <button
                   key={conversation.id}
                   type="button"
                   onClick={() => selectConversation(conversation.id)}
-                  className={`min-w-[240px] rounded-xl border px-3 py-2 text-left transition xl:min-w-0 ${
+                  className={`group block w-full rounded-2xl border px-3 py-3 text-left transition ${
                     conversation.id === selectedConversationId
-                      ? "border-stone-400 bg-amber-100 text-black"
-                      : "border-stone-200 bg-white text-black hover:bg-stone-100"
-                  }`}
+                      ? "border-stone-900 bg-stone-900 text-white shadow-[0_18px_36px_rgba(17,17,17,0.14)]"
+                      : "border-stone-200 bg-white text-black hover:border-stone-300 hover:bg-stone-50"
+                  } ${conversation.id === conversations[0]?.id ? "" : "mt-2"}`}
                 >
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm font-semibold">{conversation.otherUser.username}</p>
-                    {conversation.unreadCount > 0 ? (
-                      <span className="rounded-full bg-amber-200 px-2 py-0.5 text-[11px] font-semibold text-black">
-                        {conversation.unreadCount}
-                      </span>
-                    ) : null}
+                  <div className="flex items-start gap-3">
+                    <div
+                      className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-sm font-semibold ${
+                        conversation.id === selectedConversationId
+                          ? "bg-white/14 text-white"
+                          : conversation.unreadCount > 0
+                            ? "bg-amber-100 text-amber-900"
+                            : "bg-stone-100 text-stone-700"
+                      }`}
+                    >
+                      {getUserInitials(conversation.otherUser.username)}
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold">
+                            {conversation.otherUser.username}
+                          </p>
+                          <p
+                            className={`mt-1 truncate text-sm ${
+                              conversation.id === selectedConversationId
+                                ? "text-white/80"
+                                : conversation.unreadCount > 0
+                                  ? "font-medium text-black"
+                                  : "text-black/60"
+                            }`}
+                          >
+                            {conversationPreviewText(conversation, accountUser.id)}
+                          </p>
+                        </div>
+
+                        <div className="flex shrink-0 flex-col items-end gap-1">
+                          <span
+                            className={`text-[11px] font-medium ${
+                              conversation.id === selectedConversationId
+                                ? "text-white/70"
+                                : conversation.unreadCount > 0
+                                  ? "text-amber-800"
+                                  : "text-black/45"
+                            }`}
+                          >
+                            {formatConversationTimestamp(conversation.lastActivityAt)}
+                          </span>
+                          {conversation.unreadCount > 0 ? (
+                            <span
+                              className={`min-w-6 rounded-full px-2 py-0.5 text-center text-[11px] font-semibold ${
+                                conversation.id === selectedConversationId
+                                  ? "bg-white text-stone-900"
+                                  : "bg-amber-200 text-black"
+                              }`}
+                            >
+                              {conversation.unreadCount}
+                            </span>
+                          ) : (
+                            <span
+                              className={`h-2.5 w-2.5 rounded-full ${
+                                conversation.id === selectedConversationId
+                                  ? "bg-white/35"
+                                  : "bg-stone-200"
+                              }`}
+                            />
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <p
-                    className={`truncate text-xs ${
-                      conversation.unreadCount > 0 ? "font-semibold text-black" : "opacity-80"
-                    }`}
-                  >
-                    {conversation.lastMessage?.textPreview ?? "No messages yet"}
-                  </p>
                 </button>
               ))}
             </div>

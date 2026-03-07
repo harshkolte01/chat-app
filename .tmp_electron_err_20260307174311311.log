@@ -1,0 +1,17 @@
+C:\Coding\sec-chat\chat-app\desktop-chat-app\main.cjs:174
+  .whenReady()
+   ^
+
+TypeError: Cannot read properties of undefined (reading 'whenReady')
+    at Object.<anonymous> (C:\Coding\sec-chat\chat-app\desktop-chat-app\main.cjs:174:4)
+    at Module._compile (node:internal/modules/cjs/loader:1714:14)
+    at Module._extensions..js (node:internal/modules/cjs/loader:1848:10)
+    at Module.load (node:internal/modules/cjs/loader:1448:32)
+    at Module._load (node:internal/modules/cjs/loader:1270:12)
+    at c._load (node:electron/js2c/node_init:2:17993)
+    at TracingChannel.traceSync (node:diagnostics_channel:328:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:244:24)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:186:5)
+    at node:internal/main/run_main_module:36:49
+
+Node.js v22.21.1

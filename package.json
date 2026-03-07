@@ -2,14 +2,18 @@
   "name": "chat-app",
   "version": "0.1.0",
   "private": true,
+  "main": "desktop-chat-app/main.cjs",
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
     "start": "next start",
+    "desktop:start": "set ELECTRON_RUN_AS_NODE=&& electron ./desktop-chat-app/main.cjs",
+    "desktop:dev": "set ELECTRON_RUN_AS_NODE=&& electron ./desktop-chat-app/main.cjs",
     "lint": "eslint",
     "test:socket": "node scripts/socket-realtime-check.mjs",
     "db:reset-data": "node scripts/reset-db-data.mjs",
-    "db:create-two-users": "node scripts/create-two-users.mjs"
+    "db:create-two-users": "node scripts/create-two-users.mjs",
+    "db:create-user": "node scripts/create-user.mjs"
   },
   "dependencies": {
     "@emoji-mart/data": "^1.2.1",
@@ -29,6 +33,7 @@
     "@types/pg": "^8.18.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "electron": "^37.10.3",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "prisma": "^7.4.2",

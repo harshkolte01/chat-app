@@ -1,0 +1,4 @@
+
+> chat-app@0.1.0 desktop:dev
+> electron ./desktop-chat-app/main.cjs
+

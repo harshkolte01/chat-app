@@ -1,38 +1,12 @@
 import { NextRequest } from "next/server";
 import { fail, ok, parseJsonBody } from "@/lib/api/responses";
-import { getCurrentUserFromRequest, serializePublicUser } from "@/lib/auth/current-user";
+import { getCurrentUserFromRequest } from "@/lib/auth/current-user";
+import { listConversationSummaries } from "@/lib/chat/conversation-summaries";
 import { prisma } from "@/lib/db";
 
 type CreateConversationBody = {
   otherUserId?: string;
   username?: string;
-};
-
-type ConversationUser = {
-  id: string;
-  username: string;
-  email: string;
-  createdAt: Date;
-};
-
-type ConversationMessage = {
-  id: string;
-  type: "TEXT" | "IMAGE";
-  text: string | null;
-  imageKey: string | null;
-  senderId: string;
-  status: "SENT" | "DELIVERED" | "READ";
-  createdAt: Date;
-};
-
-type ConversationRecord = {
-  id: string;
-  userAId: string;
-  userBId: string;
-  createdAt: Date;
-  userA: ConversationUser;
-  userB: ConversationUser;
-  messages: ConversationMessage[];
 };
 
 function getPairIds(firstUserId: string, secondUserId: string): [string, string] {
@@ -56,72 +30,8 @@ export async function GET(request: NextRequest) {
     return fail(401, "UNAUTHORIZED", "Authentication required.");
   }
 
-  const conversations = (await prisma.conversation.findMany({
-    where: {
-      OR: [{ userAId: currentUser.id }, { userBId: currentUser.id }],
-    },
-    include: {
-      userA: {
-        select: {
-          id: true,
-          username: true,
-          email: true,
-          createdAt: true,
-        },
-      },
-      userB: {
-        select: {
-          id: true,
-          username: true,
-          email: true,
-          createdAt: true,
-        },
-      },
-      messages: {
-        take: 1,
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        select: {
-          id: true,
-          type: true,
-          text: true,
-          imageKey: true,
-          senderId: true,
-          status: true,
-          createdAt: true,
-        },
-      },
-    },
-  })) as ConversationRecord[];
-
-  const serializedConversations = conversations
-    .map((conversation) => {
-      const otherUser =
-        conversation.userAId === currentUser.id ? conversation.userB : conversation.userA;
-      const lastMessage = conversation.messages[0] ?? null;
-      const lastActivity = lastMessage?.createdAt ?? conversation.createdAt;
-
-      return {
-        id: conversation.id,
-        otherUser: serializePublicUser(otherUser),
-        lastActivityAt: lastActivity.toISOString(),
-        lastMessage: lastMessage
-          ? {
-              id: lastMessage.id,
-              senderId: lastMessage.senderId,
-              type: lastMessage.type,
-              status: lastMessage.status,
-              textPreview: lastMessage.type === "TEXT" ? (lastMessage.text ?? "") : "[image]",
-              createdAt: lastMessage.createdAt.toISOString(),
-            }
-          : null,
-      };
-    })
-    .sort(
-      (a, b) =>
-        new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime(),
-    );
-
-  return ok({ conversations: serializedConversations });
+  const conversations = await listConversationSummaries(currentUser.id);
+  return ok({ conversations });
 }
 
 export async function POST(request: NextRequest) {

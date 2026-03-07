@@ -1,0 +1,5 @@
+
+> chat-app@0.1.0 desktop:dev
+> set ELECTRON_RUN_AS_NODE=&& electron ./desktop-chat-app/main.cjs
+
+

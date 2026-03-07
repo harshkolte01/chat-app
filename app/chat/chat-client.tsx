@@ -5,10 +5,12 @@ import { useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
 import { PublicUser } from "@/lib/auth/current-user";
 import { Composer } from "@/components/chat/Composer";
+import { getDesktopBridge, isDesktopShell } from "@/lib/desktop-bridge";
 import {
   ChatMessageStatusUpdatedEvent,
   ChatNewMessageEvent,
   ClientToServerEvents,
+  MessageReadPayload,
   SendMessageAckData,
   ServerToClientEvents,
   SocketAckResponse,
@@ -28,6 +30,8 @@ type Conversation = {
     textPreview: string;
     createdAt: string;
   } | null;
+  unreadCount: number;
+  latestUnreadMessage: ConversationUnreadMessage | null;
 };
 
 type Message = {
@@ -50,6 +54,15 @@ type MessageReply = {
   type: "TEXT" | "IMAGE";
   text: string | null;
   imageKey: string | null;
+  createdAt: string;
+};
+
+type ConversationUnreadMessage = {
+  id: string;
+  senderId: string;
+  senderUsername: string;
+  type: "TEXT" | "IMAGE";
+  textPreview: string;
   createdAt: string;
 };
 
@@ -76,6 +89,11 @@ type CreateConversationResponse = {
   created: boolean;
 };
 
+type ReadMessagesResponse = {
+  updatedCount: number;
+  readAt: string;
+};
+
 type PresignUploadResponse = {
   uploadUrl: string;
   fileUrl: string;
@@ -98,7 +116,7 @@ type SocketClient = Socket<ServerToClientEvents, ClientToServerEvents>;
 const SOCKET_ACK_TIMEOUT_MS = 8_000;
 const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024;
 const POLL_MESSAGES_INTERVAL_MS = 2_500;
-const POLL_CONVERSATIONS_INTERVAL_MS = 12_000;
+const POLL_CONVERSATIONS_INTERVAL_MS = 5_000;
 const POLL_BACKOFF_MAX_MS = 60_000;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -315,9 +333,27 @@ function toReplyTarget(message: Message): MessageReply {
   };
 }
 
+function toConversationUnreadMessage(
+  message: SocketMessage | Message,
+  senderUsername: string,
+): ConversationUnreadMessage {
+  return {
+    id: message.id,
+    senderId: message.senderId,
+    senderUsername,
+    type: message.type,
+    textPreview: messagePreview(message),
+    createdAt: message.createdAt,
+  };
+}
+
 function updateConversationPreview(
   previous: Conversation[],
   message: SocketMessage | Message,
+  options: {
+    unreadDelta?: number;
+    latestUnreadMessage?: ConversationUnreadMessage | null;
+  } = {},
 ): Conversation[] {
   const targetIndex = previous.findIndex(
     (conversation) => conversation.id === message.conversationId,
@@ -328,6 +364,10 @@ function updateConversationPreview(
   }
 
   const target = previous[targetIndex];
+  if (target.lastMessage?.id === message.id) {
+    return previous;
+  }
+
   const updatedConversation: Conversation = {
     ...target,
     lastActivityAt: message.createdAt,
@@ -339,10 +379,69 @@ function updateConversationPreview(
       textPreview: messagePreview(message),
       createdAt: message.createdAt,
     },
+    unreadCount: Math.max(0, target.unreadCount + (options.unreadDelta ?? 0)),
+    latestUnreadMessage:
+      options.latestUnreadMessage === undefined
+        ? target.latestUnreadMessage
+        : options.latestUnreadMessage,
   };
 
   const next = previous.filter((_, index) => index !== targetIndex);
   return [updatedConversation, ...next];
+}
+
+function clearConversationUnreadState(
+  previous: Conversation[],
+  conversationId: string,
+  currentUserId: string,
+  readAt: string,
+) {
+  return previous.map((conversation) => {
+    if (conversation.id !== conversationId) {
+      return conversation;
+    }
+
+    const lastMessage =
+      conversation.lastMessage &&
+      conversation.lastMessage.senderId !== currentUserId &&
+      conversation.lastMessage.createdAt <= readAt &&
+      conversation.lastMessage.status !== "READ"
+        ? {
+            ...conversation.lastMessage,
+            status: "READ" as const,
+          }
+        : conversation.lastMessage;
+
+    return {
+      ...conversation,
+      lastMessage,
+      unreadCount: 0,
+      latestUnreadMessage: null,
+    };
+  });
+}
+
+function markMessagesReadLocally(
+  previous: Message[],
+  conversationId: string,
+  currentUserId: string,
+  readAt: string,
+) {
+  return previous.map((message) => {
+    if (
+      message.conversationId !== conversationId ||
+      message.senderId === currentUserId ||
+      message.createdAt > readAt ||
+      message.status === "READ"
+    ) {
+      return message;
+    }
+
+    return {
+      ...message,
+      status: "READ" as const,
+    };
+  });
 }
 
 function updateMessageStatusLocally(previous: Message[], payload: ChatMessageStatusUpdatedEvent) {
@@ -413,11 +512,43 @@ function emitSendMessageWithAck(
   });
 }
 
+function emitReadMessageWithAck(socket: SocketClient, payload: MessageReadPayload) {
+  return new Promise<SocketAckResponse<{ updatedCount: number }>>((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      resolve({
+        ok: false,
+        error: {
+          code: "ACK_TIMEOUT",
+          message: "Socket ack timeout.",
+        },
+      });
+    }, SOCKET_ACK_TIMEOUT_MS);
+
+    socket.emit("chat:message_read", payload, (response) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timer);
+      resolve(response);
+    });
+  });
+}
+
 export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   const router = useRouter();
   const socketRef = useRef<SocketClient | null>(null);
   const selectedConversationIdRef = useRef<string | null>(null);
   const lastReadEventRef = useRef<string | null>(null);
+  const hasInitializedUnreadTrackingRef = useRef(false);
+  const observedUnreadMessageIdsRef = useRef<Map<string, string>>(new Map());
   const messageScrollRef = useRef<HTMLDivElement | null>(null);
   const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
@@ -449,6 +580,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   const [isBrowserOnline, setIsBrowserOnline] = useState(
     () => (typeof navigator === "undefined" ? true : navigator.onLine),
   );
+  const desktopShell = isDesktopShell();
 
   const selectedConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
@@ -456,13 +588,95 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   );
   const displayedMessages = useMemo(() => [...messages].reverse(), [messages]);
   const newestMessageId = messages[0]?.id ?? null;
+  const totalUnreadCount = useMemo(
+    () => conversations.reduce((sum, conversation) => sum + conversation.unreadCount, 0),
+    [conversations],
+  );
   const realtimeStatus = socketConnected
     ? "connected"
     : isBrowserOnline
-      ? isPageVisible
+      ? desktopShell || isPageVisible
         ? "polling fallback active"
         : "paused (tab hidden)"
       : "offline";
+
+  const showDesktopNotification = useCallback((params: {
+    conversationId: string;
+    latestUnreadMessage: ConversationUnreadMessage;
+  }) => {
+    const desktop = getDesktopBridge();
+    if (!desktop) {
+      return;
+    }
+
+    void desktop.showNotification({
+      title: params.latestUnreadMessage.senderUsername,
+      body: params.latestUnreadMessage.textPreview,
+      conversationId: params.conversationId,
+      messageId: params.latestUnreadMessage.id,
+    });
+    void desktop.flashWindow();
+  }, []);
+
+  const isConversationActivelyViewed = useCallback((conversationId: string) => {
+    if (selectedConversationIdRef.current !== conversationId || typeof document === "undefined") {
+      return false;
+    }
+
+    return document.visibilityState === "visible" && document.hasFocus();
+  }, []);
+
+  const syncObservedUnreadMessages = useCallback(
+    (nextConversations: Conversation[]) => {
+      const observedUnreadMessageIds = observedUnreadMessageIdsRef.current;
+      const nextConversationIds = new Set<string>();
+
+      if (!hasInitializedUnreadTrackingRef.current) {
+        observedUnreadMessageIds.clear();
+        for (const conversation of nextConversations) {
+          nextConversationIds.add(conversation.id);
+          if (conversation.latestUnreadMessage) {
+            observedUnreadMessageIds.set(conversation.id, conversation.latestUnreadMessage.id);
+          }
+        }
+
+        hasInitializedUnreadTrackingRef.current = true;
+        return;
+      }
+
+      for (const conversation of nextConversations) {
+        nextConversationIds.add(conversation.id);
+
+        const latestUnreadMessage = conversation.latestUnreadMessage;
+        if (!latestUnreadMessage) {
+          observedUnreadMessageIds.delete(conversation.id);
+          continue;
+        }
+
+        const previouslyObservedId = observedUnreadMessageIds.get(conversation.id);
+        if (previouslyObservedId === latestUnreadMessage.id) {
+          continue;
+        }
+
+        observedUnreadMessageIds.set(conversation.id, latestUnreadMessage.id);
+        if (!desktopShell || isConversationActivelyViewed(conversation.id)) {
+          continue;
+        }
+
+        showDesktopNotification({
+          conversationId: conversation.id,
+          latestUnreadMessage,
+        });
+      }
+
+      for (const conversationId of [...observedUnreadMessageIds.keys()]) {
+        if (!nextConversationIds.has(conversationId)) {
+          observedUnreadMessageIds.delete(conversationId);
+        }
+      }
+    },
+    [desktopShell, isConversationActivelyViewed, showDesktopNotification],
+  );
 
   const loadConversations = useCallback(async (options: { silent?: boolean } = {}) => {
     const silent = options.silent === true;
@@ -473,6 +687,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
 
     try {
       const data = await fetchJson<ConversationsResponse>("/api/conversations");
+      syncObservedUnreadMessages(data.conversations);
       setConversations(data.conversations);
 
       setSelectedConversationId((previousSelectedConversationId) => {
@@ -504,7 +719,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
         setLoadingConversations(false);
       }
     }
-  }, []);
+  }, [syncObservedUnreadMessages]);
 
   const loadDirectoryUsers = useCallback(async (query: string) => {
     setLoadingDirectoryUsers(true);
@@ -574,6 +789,26 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     },
     [],
   );
+
+  const markConversationRead = useCallback(async (payload: MessageReadPayload) => {
+    const socket = socketRef.current;
+    if (socket && socket.connected) {
+      const ack = await emitReadMessageWithAck(socket, payload);
+      if (!ack.ok) {
+        throw new Error(ack.error.message);
+      }
+
+      return;
+    }
+
+    await fetchJson<ReadMessagesResponse>("/api/messages/read", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+  }, []);
 
   async function sendViaRestFallback(payload: {
     conversationId: string;
@@ -979,6 +1214,12 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
       socketRef.current = null;
     }
 
+    const desktop = getDesktopBridge();
+    if (desktop) {
+      void desktop.setBadgeCount(0);
+      void desktop.stopFlashWindow();
+    }
+
     try {
       await fetchJson("/api/auth/logout", { method: "POST" });
     } finally {
@@ -990,6 +1231,18 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
   }, [selectedConversationId]);
+
+  useEffect(() => {
+    const desktop = getDesktopBridge();
+    if (!desktop) {
+      return;
+    }
+
+    void desktop.setBadgeCount(totalUnreadCount);
+    if (totalUnreadCount === 0) {
+      void desktop.stopFlashWindow();
+    }
+  }, [totalUnreadCount]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined") {
@@ -1070,7 +1323,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
         return;
       }
 
-      if (!isBrowserOnline || !isPageVisible || cameraOpen) {
+      if (!isBrowserOnline || (!desktopShell && !isPageVisible) || cameraOpen) {
         schedule(POLL_CONVERSATIONS_INTERVAL_MS);
         return;
       }
@@ -1093,7 +1346,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
         clearTimeout(timer);
       }
     };
-  }, [cameraOpen, isBrowserOnline, isPageVisible, loadConversations, socketConnected]);
+  }, [cameraOpen, desktopShell, isBrowserOnline, isPageVisible, loadConversations, socketConnected]);
 
   useEffect(() => {
     if (socketConnected || !selectedConversationId) {
@@ -1259,9 +1512,30 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
         socket.on("chat:new_message", (payload) => {
           const incomingMessage = toMessageFromSocket(payload);
           const activeConversationId = selectedConversationIdRef.current;
+          const shouldTreatAsUnread =
+            incomingMessage.senderId !== currentUser.id &&
+            !isConversationActivelyViewed(incomingMessage.conversationId);
+          const latestUnreadMessage = toConversationUnreadMessage(
+            incomingMessage,
+            payload.sender.username,
+          );
+
+          observedUnreadMessageIdsRef.current.set(incomingMessage.conversationId, incomingMessage.id);
+
+          if (shouldTreatAsUnread && desktopShell) {
+            showDesktopNotification({
+              conversationId: incomingMessage.conversationId,
+              latestUnreadMessage,
+            });
+          }
 
           setConversations((previous) => {
-            const updated = updateConversationPreview(previous, incomingMessage);
+            const updated = updateConversationPreview(previous, incomingMessage, shouldTreatAsUnread
+              ? {
+                  unreadDelta: 1,
+                  latestUnreadMessage,
+                }
+              : undefined);
             if (updated === previous) {
               void loadConversations();
             }
@@ -1299,11 +1573,16 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
         socketRef.current = null;
       }
     };
-  }, [loadConversations]);
+  }, [
+    currentUser.id,
+    desktopShell,
+    isConversationActivelyViewed,
+    loadConversations,
+    showDesktopNotification,
+  ]);
 
   useEffect(() => {
-    const socket = socketRef.current;
-    if (!socket || !socket.connected || !selectedConversationId || messages.length === 0) {
+    if (!selectedConversationId || messages.length === 0) {
       return;
     }
 
@@ -1316,19 +1595,36 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     }
 
     lastReadEventRef.current = readKey;
-    if (persistedId) {
-      socket.emit("chat:message_read", {
-        conversationId: selectedConversationId,
-        lastReadMessageId: persistedId,
-      });
-      return;
-    }
+    const payload: MessageReadPayload = persistedId
+      ? {
+          conversationId: selectedConversationId,
+          lastReadMessageId: persistedId,
+        }
+      : {
+          conversationId: selectedConversationId,
+          timestamp: newestMessage.createdAt,
+        };
 
-    socket.emit("chat:message_read", {
-      conversationId: selectedConversationId,
-      timestamp: newestMessage.createdAt,
-    });
-  }, [messages, selectedConversationId, socketConnected]);
+    void markConversationRead(payload)
+      .then(() => {
+        setMessages((previous) =>
+          markMessagesReadLocally(previous, selectedConversationId, currentUser.id, newestMessage.createdAt),
+        );
+        setConversations((previous) =>
+          clearConversationUnreadState(
+            previous,
+            selectedConversationId,
+            currentUser.id,
+            newestMessage.createdAt,
+          ),
+        );
+      })
+      .catch(() => {
+        if (lastReadEventRef.current === readKey) {
+          lastReadEventRef.current = null;
+        }
+      });
+  }, [currentUser.id, markConversationRead, messages, selectedConversationId]);
 
   useEffect(() => {
     const container = messageScrollRef.current;
@@ -1445,8 +1741,19 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
                       : "border-stone-200 bg-white text-black hover:bg-stone-100"
                   }`}
                 >
-                  <p className="text-sm font-semibold">{conversation.otherUser.username}</p>
-                  <p className="truncate text-xs opacity-80">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-semibold">{conversation.otherUser.username}</p>
+                    {conversation.unreadCount > 0 ? (
+                      <span className="rounded-full bg-amber-200 px-2 py-0.5 text-[11px] font-semibold text-black">
+                        {conversation.unreadCount}
+                      </span>
+                    ) : null}
+                  </div>
+                  <p
+                    className={`truncate text-xs ${
+                      conversation.unreadCount > 0 ? "font-semibold text-black" : "opacity-80"
+                    }`}
+                  >
                     {conversation.lastMessage?.textPreview ?? "No messages yet"}
                   </p>
                 </button>

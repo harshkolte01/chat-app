@@ -2,6 +2,11 @@ import type { Server as HttpServer } from "node:http";
 import { Server as SocketIOServer, Socket } from "socket.io";
 import { AUTH_COOKIE_NAME } from "@/lib/auth/constants";
 import { verifySessionToken } from "@/lib/auth/jwt";
+import {
+  applyConversationReadState,
+  getConversationForMember,
+  resolveReadTimestamp,
+} from "@/lib/chat/read-state";
 import { prisma } from "@/lib/db";
 import {
   ChatMessageStatusUpdatedEvent,
@@ -184,20 +189,6 @@ function emitStatusUpdate(
   for (const participantId of participantIds) {
     io.to(userRoom(participantId)).emit("chat:message_status_updated", payload);
   }
-}
-
-async function getConversationForMember(conversationId: string, userId: string) {
-  return prisma.conversation.findFirst({
-    where: {
-      id: conversationId,
-      OR: [{ userAId: userId }, { userBId: userId }],
-    },
-    select: {
-      id: true,
-      userAId: true,
-      userBId: true,
-    },
-  });
 }
 
 async function handleSendMessage(
@@ -411,42 +402,6 @@ async function handleMessageDelivered(
   ackSuccess(ack);
 }
 
-async function resolveReadTimestamp(
-  payload: MessageReadPayload,
-): Promise<{ timestamp: Date; valid: boolean }> {
-  const lastReadMessageId = payload.lastReadMessageId?.trim();
-  if (lastReadMessageId) {
-    if (!isUuid(lastReadMessageId)) {
-      return { timestamp: new Date(), valid: false };
-    }
-
-    const message = await prisma.message.findUnique({
-      where: { id: lastReadMessageId },
-      select: {
-        conversationId: true,
-        createdAt: true,
-      },
-    });
-
-    if (!message || message.conversationId !== payload.conversationId) {
-      return { timestamp: new Date(), valid: false };
-    }
-
-    return { timestamp: message.createdAt, valid: true };
-  }
-
-  if (payload.timestamp?.trim()) {
-    const parsed = new Date(payload.timestamp);
-    if (Number.isNaN(parsed.getTime())) {
-      return { timestamp: new Date(), valid: false };
-    }
-
-    return { timestamp: parsed, valid: true };
-  }
-
-  return { timestamp: new Date(), valid: true };
-}
-
 async function handleMessageRead(
   io: SocketServer,
   socket: AuthenticatedSocket,
@@ -474,46 +429,13 @@ async function handleMessageRead(
     return ackError(ack, "INVALID_PAYLOAD", "Invalid lastReadMessageId or timestamp.");
   }
 
-  await prisma.userConversation.upsert({
-    where: {
-      conversationId_userId: {
-        conversationId,
-        userId,
-      },
-    },
-    update: {
-      lastReadAt: resolved.timestamp,
-    },
-    create: {
-      conversationId,
-      userId,
-      lastReadAt: resolved.timestamp,
-    },
+  const { participantIds, unreadIds } = await applyConversationReadState({
+    conversation,
+    userId,
+    readAt: resolved.timestamp,
   });
 
-  const unreadMessages = await prisma.message.findMany({
-    where: {
-      conversationId,
-      senderId: { not: userId },
-      createdAt: { lte: resolved.timestamp },
-      status: { in: ["SENT", "DELIVERED"] },
-    },
-    select: { id: true },
-  });
-
-  if (unreadMessages.length > 0) {
-    const unreadIds = unreadMessages.map((item) => item.id);
-
-    await prisma.message.updateMany({
-      where: {
-        id: { in: unreadIds },
-      },
-      data: {
-        status: "READ",
-      },
-    });
-
-    const participantIds = [conversation.userAId, conversation.userBId];
+  if (unreadIds.length > 0) {
     for (const messageId of unreadIds) {
       clearPendingDeliveryAck(messageId);
       emitStatusUpdate(
@@ -528,7 +450,7 @@ async function handleMessageRead(
     }
   }
 
-  ackSuccess(ack, { updatedCount: unreadMessages.length });
+  ackSuccess(ack, { updatedCount: unreadIds.length });
 }
 
 export function registerSocketHandlers(io: SocketServer) {

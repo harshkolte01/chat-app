@@ -546,6 +546,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   const router = useRouter();
   const socketRef = useRef<SocketClient | null>(null);
   const selectedConversationIdRef = useRef<string | null>(null);
+  const allowAutoSelectConversationRef = useRef(true);
   const lastReadEventRef = useRef<string | null>(null);
   const hasInitializedUnreadTrackingRef = useRef(false);
   const observedUnreadMessageIdsRef = useRef<Map<string, string>>(new Map());
@@ -599,6 +600,19 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
         ? "polling fallback active"
         : "paused (tab hidden)"
       : "offline";
+
+  const selectConversation = useCallback((conversationId: string) => {
+    allowAutoSelectConversationRef.current = true;
+    setSelectedConversationId(conversationId);
+  }, []);
+
+  const closeConversation = useCallback(() => {
+    allowAutoSelectConversationRef.current = false;
+    setSelectedConversationId(null);
+    setMessages([]);
+    setNextCursor(null);
+    setMessagePanelFullscreen(false);
+  }, []);
 
   const showDesktopNotification = useCallback((params: {
     conversationId: string;
@@ -698,14 +712,18 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
         }
 
         if (!previousSelectedConversationId) {
-          return data.conversations[0].id;
+          return allowAutoSelectConversationRef.current ? data.conversations[0].id : null;
         }
 
         const selectedStillExists = data.conversations.some(
           (conversation) => conversation.id === previousSelectedConversationId,
         );
 
-        return selectedStillExists ? previousSelectedConversationId : data.conversations[0].id;
+        if (selectedStillExists) {
+          return previousSelectedConversationId;
+        }
+
+        return allowAutoSelectConversationRef.current ? data.conversations[0].id : null;
       });
       return data.conversations;
     } catch (loadError) {
@@ -1195,6 +1213,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
       });
 
       await loadConversations();
+      allowAutoSelectConversationRef.current = true;
       setSelectedConversationId(response.conversationId);
       setMessages([]);
       setNextCursor(null);
@@ -1286,6 +1305,8 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
 
   useEffect(() => {
     if (!selectedConversationId) {
+      setMessages([]);
+      setNextCursor(null);
       return;
     }
 
@@ -1734,7 +1755,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
                 <button
                   key={conversation.id}
                   type="button"
-                  onClick={() => setSelectedConversationId(conversation.id)}
+                  onClick={() => selectConversation(conversation.id)}
                   className={`min-w-[240px] rounded-xl border px-3 py-2 text-left transition xl:min-w-0 ${
                     conversation.id === selectedConversationId
                       ? "border-stone-400 bg-amber-100 text-black"
@@ -1771,110 +1792,138 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
               <h2 className="text-lg font-semibold text-black">
                 {selectedConversation
                   ? `${selectedConversation.otherUser.username}`
-                  : "Select a conversation"}
+                  : "No chat selected"}
               </h2>
-              <button
-                type="button"
-                onClick={() => setMessagePanelFullscreen((previous) => !previous)}
-                className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-xs font-semibold text-black transition hover:bg-stone-100"
-              >
-                {messagePanelFullscreen ? "Exit full screen" : "Full screen"}
-              </button>
-            </div>
-
-            <div ref={messageScrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto pb-3 pr-1">
-              {loadingMessages ? <p className="text-sm text-black/70">Loading messages...</p> : null}
-
-              {!loadingMessages && messages.length === 0 ? (
-                <p className="text-sm text-black/70">No messages in this conversation yet.</p>
-              ) : null}
-
-              {nextCursor ? (
+              <div className="flex items-center gap-2">
+                {selectedConversation ? (
+                  <button
+                    type="button"
+                    onClick={closeConversation}
+                    className="rounded-lg border border-stone-300 bg-stone-50 px-3 py-1.5 text-xs font-semibold text-black transition hover:bg-stone-100"
+                  >
+                    Close chat
+                  </button>
+                ) : null}
                 <button
                   type="button"
-                  onClick={() =>
-                    selectedConversationId ? loadMessages(selectedConversationId, nextCursor) : null
-                  }
-                  className="rounded-xl border border-stone-300 px-3 py-1 text-xs font-semibold text-black transition hover:bg-stone-100"
+                  onClick={() => setMessagePanelFullscreen((previous) => !previous)}
+                  disabled={!selectedConversation}
+                  className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-xs font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-black/40"
                 >
-                  Load older messages
+                  {messagePanelFullscreen ? "Exit full screen" : "Full screen"}
                 </button>
-              ) : null}
-
-              {displayedMessages.map((message) => {
-                const isCurrentUser = message.senderId === currentUser.id;
-                const normalizedImageUrl =
-                  message.type === "IMAGE" && message.imageKey
-                    ? normalizeMessageImageUrl(message.imageKey)
-                    : null;
-                const replySnippet = message.replyTo ? messageReplyPreview(message.replyTo) : null;
-
-                return (
-                  <div
-                    key={message.id}
-                    className={`max-w-[92%] rounded-xl border px-3 py-2 text-sm shadow-[0_6px_16px_rgba(17,17,17,0.04)] sm:max-w-[80%] ${
-                      isCurrentUser
-                        ? "ml-auto border-amber-200 bg-amber-100 text-black"
-                        : "border-stone-200 bg-stone-100 text-black"
-                    }`}
-                  >
-                    <div className="mb-1 flex items-center justify-between gap-3">
-                      <p className="text-xs font-medium opacity-80">
-                        {message.sender.username} | {message.status}
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => setReplyingTo(toReplyTarget(message))}
-                        className="rounded-md border border-black/15 bg-white/60 px-2 py-0.5 text-[11px] font-semibold text-black/80 transition hover:bg-white"
-                      >
-                        Reply
-                      </button>
-                    </div>
-                    {message.replyTo ? (
-                      <div className="mb-2 rounded-lg border border-black/10 bg-white/45 px-2 py-1">
-                        <p className="text-[11px] font-semibold text-black/75">
-                          {message.replyTo.senderId === currentUser.id
-                            ? "You"
-                            : message.replyTo.senderUsername}
-                        </p>
-                        <p className="truncate text-xs text-black/70">{replySnippet}</p>
-                      </div>
-                    ) : null}
-                    {message.type === "IMAGE" && normalizedImageUrl ? (
-                      <a href={normalizedImageUrl} target="_blank" rel="noopener noreferrer">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={normalizedImageUrl}
-                          alt="Chat upload"
-                          className="max-h-64 w-auto max-w-full rounded-lg object-cover"
-                          loading="lazy"
-                        />
-                      </a>
-                    ) : (
-                      <p>{message.text ?? "[unsupported message]"}</p>
-                    )}
-                    <p className="mt-1 text-xs opacity-70">
-                      {new Date(message.createdAt).toLocaleString()}
-                    </p>
-                  </div>
-                );
-              })}
+              </div>
             </div>
 
-            <Composer
-              draft={draft}
-              selectedConversationId={selectedConversationId}
-              sendingMessage={sendingMessage}
-              uploadingImage={uploadingImage}
-              cameraStarting={cameraStarting}
-              currentUserId={currentUser.id}
-              replyingTo={replyingTo}
-              onDraftChange={setDraft}
-              onCancelReply={() => setReplyingTo(null)}
-              onSendMessage={onSendMessage}
-              onImageSelected={onImageSelected}
-              onOpenCamera={openCameraModal}
-            />
+            {selectedConversation ? (
+              <>
+                <div ref={messageScrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto pb-3 pr-1">
+                  {loadingMessages ? <p className="text-sm text-black/70">Loading messages...</p> : null}
+
+                  {!loadingMessages && messages.length === 0 ? (
+                    <p className="text-sm text-black/70">No messages in this conversation yet.</p>
+                  ) : null}
+
+                  {nextCursor ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        selectedConversationId ? loadMessages(selectedConversationId, nextCursor) : null
+                      }
+                      className="rounded-xl border border-stone-300 px-3 py-1 text-xs font-semibold text-black transition hover:bg-stone-100"
+                    >
+                      Load older messages
+                    </button>
+                  ) : null}
+
+                  {displayedMessages.map((message) => {
+                    const isCurrentUser = message.senderId === currentUser.id;
+                    const normalizedImageUrl =
+                      message.type === "IMAGE" && message.imageKey
+                        ? normalizeMessageImageUrl(message.imageKey)
+                        : null;
+                    const replySnippet = message.replyTo ? messageReplyPreview(message.replyTo) : null;
+
+                    return (
+                      <div
+                        key={message.id}
+                        className={`max-w-[92%] rounded-xl border px-3 py-2 text-sm shadow-[0_6px_16px_rgba(17,17,17,0.04)] sm:max-w-[80%] ${
+                          isCurrentUser
+                            ? "ml-auto border-amber-200 bg-amber-100 text-black"
+                            : "border-stone-200 bg-stone-100 text-black"
+                        }`}
+                      >
+                        <div className="mb-1 flex items-center justify-between gap-3">
+                          <p className="text-xs font-medium opacity-80">
+                            {message.sender.username} | {message.status}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setReplyingTo(toReplyTarget(message))}
+                            className="rounded-md border border-black/15 bg-white/60 px-2 py-0.5 text-[11px] font-semibold text-black/80 transition hover:bg-white"
+                          >
+                            Reply
+                          </button>
+                        </div>
+                        {message.replyTo ? (
+                          <div className="mb-2 rounded-lg border border-black/10 bg-white/45 px-2 py-1">
+                            <p className="text-[11px] font-semibold text-black/75">
+                              {message.replyTo.senderId === currentUser.id
+                                ? "You"
+                                : message.replyTo.senderUsername}
+                            </p>
+                            <p className="truncate text-xs text-black/70">{replySnippet}</p>
+                          </div>
+                        ) : null}
+                        {message.type === "IMAGE" && normalizedImageUrl ? (
+                          <a href={normalizedImageUrl} target="_blank" rel="noopener noreferrer">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={normalizedImageUrl}
+                              alt="Chat upload"
+                              className="max-h-64 w-auto max-w-full rounded-lg object-cover"
+                              loading="lazy"
+                            />
+                          </a>
+                        ) : (
+                          <p>{message.text ?? "[unsupported message]"}</p>
+                        )}
+                        <p className="mt-1 text-xs opacity-70">
+                          {new Date(message.createdAt).toLocaleString()}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <Composer
+                  draft={draft}
+                  selectedConversationId={selectedConversationId}
+                  sendingMessage={sendingMessage}
+                  uploadingImage={uploadingImage}
+                  cameraStarting={cameraStarting}
+                  currentUserId={currentUser.id}
+                  replyingTo={replyingTo}
+                  onDraftChange={setDraft}
+                  onCancelReply={() => setReplyingTo(null)}
+                  onSendMessage={onSendMessage}
+                  onImageSelected={onImageSelected}
+                  onOpenCamera={openCameraModal}
+                />
+              </>
+            ) : (
+              <div className="flex min-h-0 flex-1 items-center justify-center">
+                <div className="max-w-sm rounded-2xl border border-dashed border-stone-300 bg-stone-50 px-6 py-8 text-center">
+                  <p className="text-sm font-semibold uppercase tracking-[0.2em] text-black/45">
+                    Inbox
+                  </p>
+                  <h3 className="mt-3 text-2xl font-semibold text-black">No chat selected</h3>
+                  <p className="mt-2 text-sm leading-6 text-black/65">
+                    Choose a conversation from the left, or start a new private chat to open a thread.
+                  </p>
+                </div>
+              </div>
+            )}
           </section>
         </div>
 

@@ -4,6 +4,7 @@ import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useSta
 import { useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
 import { PublicUser } from "@/lib/auth/current-user";
+import { BrandMark } from "@/components/BrandMark";
 import { Composer } from "@/components/chat/Composer";
 import { getDesktopBridge, isDesktopShell } from "@/lib/desktop-bridge";
 import {
@@ -1665,8 +1666,8 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
           }`}
         >
           <div>
-            <h1 className="text-2xl font-semibold text-black">Chat Workspace</h1>
-            <p className="text-sm text-black/70">
+            <BrandMark size="sm" priority subtitle="Private workspace" />
+            <p className="mt-3 text-sm text-black/70">
               Signed in as {currentUser.username} ({currentUser.email})
             </p>
             <p className="text-xs font-medium uppercase tracking-wide text-black/55">

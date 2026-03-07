@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import { BrandMark } from "@/components/BrandMark";
 
 type LoginResponse = {
   user: {
@@ -69,22 +70,23 @@ export function LoginForm() {
         <div className="grid lg:grid-cols-[1.1fr_1fr]">
           <div className="hidden bg-stone-100 p-10 lg:block">
             <p className="inline-flex rounded-full border border-stone-300 bg-amber-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-black">
-              Realtime Workspace
+              SecretChat
             </p>
             <h1 className="mt-6 max-w-sm text-4xl font-semibold leading-tight text-black">
-              Professional chat, focused on clarity.
+              Private chat, focused on clarity.
             </h1>
             <p className="mt-4 max-w-sm text-sm leading-relaxed text-black/70">
-              Secure signin with a clean light interface designed for phone, laptop, and desktop.
+              Secure sign-in with a clean light interface designed for phone, laptop, and desktop.
             </p>
             <div className="mt-8 space-y-3 text-sm text-black/85">
-              <p>Instant updates with Socket.IO fallback.</p>
-              <p>Conversation-first layout for faster team response.</p>
+              <p>Instant delivery with Socket.IO fallback.</p>
+              <p>Conversation-first design for faster team response.</p>
             </div>
           </div>
 
           <div className="p-6 sm:p-8 lg:p-10">
-            <h2 className="mb-1 text-3xl font-semibold text-black">Login</h2>
+            <BrandMark priority subtitle="Secure private messaging for your team." />
+            <h2 className="mb-1 mt-8 text-3xl font-semibold text-black">Login</h2>
             <p className="mb-6 text-sm text-black/70">Sign in with your email and password.</p>
 
             {error ? (

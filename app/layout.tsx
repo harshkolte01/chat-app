@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Sora, Source_Sans_3 } from "next/font/google";
 import "./globals.css";
 
@@ -15,8 +15,32 @@ const headingFont = Sora({
 });
 
 export const metadata: Metadata = {
-  title: "Realtime Chat",
-  description: "Professional realtime chat interface",
+  title: {
+    default: "SecretChat",
+    template: "%s | SecretChat",
+  },
+  description: "Secure realtime chat for focused private conversations.",
+  applicationName: "SecretChat",
+  manifest: "/site.webmanifest",
+  icons: {
+    icon: [
+      { url: "/favicon.ico" },
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/secretchat.png", sizes: "1024x1024", type: "image/png" },
+    ],
+    shortcut: ["/favicon.ico"],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+  },
+  appleWebApp: {
+    title: "SecretChat",
+    statusBarStyle: "default",
+    capable: true,
+  },
+};
+
+export const viewport: Viewport = {
+  colorScheme: "light",
+  themeColor: "#fcf8ef",
 };
 
 export default function RootLayout({

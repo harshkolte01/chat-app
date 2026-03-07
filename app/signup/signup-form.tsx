@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import { BrandMark } from "@/components/BrandMark";
 
 type SignupResponse = {
   user: {
@@ -79,13 +80,13 @@ export function SignupForm() {
         <div className="grid lg:grid-cols-[1.1fr_1fr]">
           <div className="hidden bg-stone-100 p-10 lg:block">
             <p className="inline-flex rounded-full border border-stone-300 bg-amber-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-black">
-              Team Access
+              SecretChat Access
             </p>
             <h1 className="mt-6 max-w-sm text-4xl font-semibold leading-tight text-black">
-              Start in minutes with a clean invite flow.
+              Start securely with a clean invite flow.
             </h1>
             <p className="mt-4 max-w-sm text-sm leading-relaxed text-black/70">
-              Built for professional teams, with straightforward onboarding and clear typography.
+              Built for private teams, with straightforward onboarding and clear typography.
             </p>
             <div className="mt-8 space-y-3 text-sm text-black/85">
               <p>Invite-code based registration for controlled access.</p>
@@ -94,7 +95,8 @@ export function SignupForm() {
           </div>
 
           <div className="p-6 sm:p-8 lg:p-10">
-            <h2 className="mb-1 text-3xl font-semibold text-black">Create account</h2>
+            <BrandMark priority subtitle="Create your account and join the workspace." />
+            <h2 className="mb-1 mt-8 text-3xl font-semibold text-black">Create account</h2>
             <p className="mb-6 text-sm text-black/70">
               Sign up with username, email, password, and your invite code.
             </p>

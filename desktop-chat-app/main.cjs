@@ -12,6 +12,9 @@ const { NEXT_APP_URL } = require("./next-app-url.cjs");
 
 let mainWindow = null;
 let unreadBadgeCount = 0;
+const APP_NAME = "SecretChat";
+const APP_USER_MODEL_ID = "sec-chat.desktop";
+const APP_ICON_PATH = path.join(__dirname, "secretchat.png");
 const WINDOWS_BADGE_SIZE = 32;
 const WINDOWS_BADGE_BACKGROUND = [180, 83, 9, 255];
 const WINDOWS_BADGE_FOREGROUND = [255, 255, 255, 255];
@@ -28,6 +31,13 @@ const WINDOWS_BADGE_GLYPHS = {
   "9": ["111", "101", "111", "001", "111"],
   "+": ["000", "010", "111", "010", "000"],
 };
+
+function loadAppIcon() {
+  const icon = nativeImage.createFromPath(APP_ICON_PATH);
+  return icon.isEmpty() ? null : icon;
+}
+
+const APP_ICON = loadAppIcon();
 
 function resolveAppUrl() {
   try {
@@ -204,6 +214,7 @@ function registerDesktopIpc() {
     const notification = new Notification({
       title,
       body,
+      icon: APP_ICON ?? undefined,
       silent: false,
     });
 
@@ -229,6 +240,7 @@ function registerDesktopIpc() {
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
+    title: APP_NAME,
     width: 1360,
     height: 900,
     minWidth: 1100,
@@ -236,6 +248,7 @@ function createMainWindow() {
     show: false,
     autoHideMenuBar: true,
     backgroundColor: "#f6f2e8",
+    icon: APP_ICON ?? undefined,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -277,8 +290,14 @@ function createMainWindow() {
 void app
   .whenReady()
   .then(() => {
+    app.setName(APP_NAME);
+
     if (process.platform === "win32") {
-      app.setAppUserModelId("sec-chat.desktop");
+      app.setAppUserModelId(APP_USER_MODEL_ID);
+    }
+
+    if (process.platform === "darwin" && APP_ICON) {
+      app.dock.setIcon(APP_ICON);
     }
 
     registerDesktopIpc();

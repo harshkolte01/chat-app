@@ -50,7 +50,7 @@ cmd /c npm run dist:win
 
 Expected output:
 
-- `release\Sec Chat Setup 0.1.0.exe`
+- `release\SecretChat Setup 0.1.0.exe`
 
 ### 4. Build a portable EXE
 
@@ -60,7 +60,7 @@ cmd /c npm run dist:portable
 
 Expected output:
 
-- `release\Sec Chat 0.1.0.exe`
+- `release\SecretChat 0.1.0.exe`
 
 ### 5. Optional: build an unpacked folder first
 

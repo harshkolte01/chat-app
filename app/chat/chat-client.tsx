@@ -121,9 +121,14 @@ const POLL_CONVERSATIONS_INTERVAL_MS = 5_000;
 const POLL_BACKOFF_MAX_MS = 60_000;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function isUuid(value: string): boolean {
   return UUID_PATTERN.test(value);
+}
+
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
 }
 
 function safeDecodeSegment(segment: string): string {
@@ -570,10 +575,10 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   const [cameraFacingMode, setCameraFacingMode] = useState<CameraFacingMode>("environment");
   const [messagePanelFullscreen, setMessagePanelFullscreen] = useState(false);
   const [socketConnected, setSocketConnected] = useState(false);
-  const [directoryUsers, setDirectoryUsers] = useState<PublicUser[]>([]);
   const [directoryQuery, setDirectoryQuery] = useState("");
-  const [selectedUserId, setSelectedUserId] = useState("");
-  const [loadingDirectoryUsers, setLoadingDirectoryUsers] = useState(false);
+  const [directorySearchResult, setDirectorySearchResult] = useState<PublicUser | null>(null);
+  const [directorySearchMessage, setDirectorySearchMessage] = useState<string | null>(null);
+  const [searchingDirectoryUser, setSearchingDirectoryUser] = useState(false);
   const [creatingConversation, setCreatingConversation] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isPageVisible, setIsPageVisible] = useState(
@@ -740,25 +745,28 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     }
   }, [syncObservedUnreadMessages]);
 
-  const loadDirectoryUsers = useCallback(async (query: string) => {
-    setLoadingDirectoryUsers(true);
+  const searchDirectoryUserByEmail = useCallback(async (email: string) => {
+    setSearchingDirectoryUser(true);
+    setDirectorySearchResult(null);
+    setDirectorySearchMessage(null);
 
     try {
-      const params = new URLSearchParams();
-      if (query.trim()) {
-        params.set("query", query.trim());
+      const params = new URLSearchParams({ email });
+      const data = await fetchJson<UsersResponse>(`/api/users?${params.toString()}`);
+      const matchedUser = data.users[0] ?? null;
+
+      if (!matchedUser) {
+        setDirectorySearchMessage("No user found for that email.");
+        return null;
       }
 
-      const suffix = params.toString() ? `?${params.toString()}` : "";
-      const data = await fetchJson<UsersResponse>(`/api/users${suffix}`);
-      setDirectoryUsers(data.users);
-      setSelectedUserId((previous) =>
-        data.users.some((user) => user.id === previous) ? previous : "",
-      );
+      setDirectorySearchResult(matchedUser);
+      return matchedUser;
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load users.");
+      return null;
     } finally {
-      setLoadingDirectoryUsers(false);
+      setSearchingDirectoryUser(false);
     }
   }, []);
 
@@ -1193,9 +1201,26 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
     await processImageFile(file);
   }
 
-  async function onStartConversation(event: FormEvent<HTMLFormElement>) {
+  async function onSearchDirectoryUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!selectedUserId || creatingConversation) {
+    if (searchingDirectoryUser || creatingConversation) {
+      return;
+    }
+
+    setError(null);
+    const normalizedEmail = normalizeEmail(directoryQuery);
+    if (!normalizedEmail || !EMAIL_PATTERN.test(normalizedEmail)) {
+      setDirectorySearchResult(null);
+      setDirectorySearchMessage("Enter a valid email address.");
+      return;
+    }
+
+    setDirectoryQuery(normalizedEmail);
+    await searchDirectoryUserByEmail(normalizedEmail);
+  }
+
+  async function onStartConversation() {
+    if (!directorySearchResult || creatingConversation || searchingDirectoryUser) {
       return;
     }
 
@@ -1209,7 +1234,7 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          otherUserId: selectedUserId,
+          otherUserId: directorySearchResult.id,
         }),
       });
 
@@ -1218,6 +1243,9 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
       setSelectedConversationId(response.conversationId);
       setMessages([]);
       setNextCursor(null);
+      setDirectoryQuery("");
+      setDirectorySearchResult(null);
+      setDirectorySearchMessage(null);
     } catch (createError) {
       setError(
         createError instanceof Error ? createError.message : "Failed to start conversation.",
@@ -1293,16 +1321,6 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
   useEffect(() => {
     void loadConversations();
   }, [loadConversations]);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      void loadDirectoryUsers(directoryQuery);
-    }, 250);
-
-    return () => {
-      clearTimeout(timer);
-    };
-  }, [directoryQuery, loadDirectoryUsers]);
 
   useEffect(() => {
     if (!selectedConversationId) {
@@ -1705,41 +1723,53 @@ export function ChatClient({ currentUser }: { currentUser: PublicUser }) {
               <p className="mt-1 text-xs text-black/65">
                 Only you and selected user can read that conversation.
               </p>
-              <form onSubmit={onStartConversation} className="mt-3 space-y-2">
+              <form onSubmit={onSearchDirectoryUser} className="mt-3 space-y-2">
                 <input
+                  type="email"
                   value={directoryQuery}
-                  onChange={(event) => setDirectoryQuery(event.target.value)}
-                  placeholder="Search by username or email"
+                  onChange={(event) => {
+                    setDirectoryQuery(event.target.value);
+                    setDirectorySearchResult(null);
+                    setDirectorySearchMessage(null);
+                  }}
+                  placeholder="Enter full email address"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   className="w-full rounded-lg border border-stone-300 bg-white px-2.5 py-2 text-xs text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
                 />
-                <select
-                  value={selectedUserId}
-                  onChange={(event) => setSelectedUserId(event.target.value)}
-                  className="w-full rounded-lg border border-stone-300 bg-white px-2.5 py-2 text-xs text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
-                >
-                  <option value="">Select user</option>
-                  {directoryUsers.map((user) => (
-                    <option key={user.id} value={user.id}>
-                      {user.username} ({user.email})
-                    </option>
-                  ))}
-                </select>
                 <button
                   type="submit"
-                  disabled={!selectedUserId || creatingConversation}
-                  className="w-full rounded-lg border border-stone-300 bg-amber-100 px-3 py-2 text-xs font-semibold text-black transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-stone-200"
+                  disabled={!directoryQuery.trim() || searchingDirectoryUser || creatingConversation}
+                  className="w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-200"
                 >
-                  {creatingConversation ? "Starting..." : "Start chat"}
+                  {searchingDirectoryUser ? "Searching..." : "Search"}
                 </button>
               </form>
-              {loadingDirectoryUsers ? (
-                <p className="mt-2 text-xs text-black/60">Loading users...</p>
+              {directorySearchResult ? (
+                <div className="mt-2 rounded-lg border border-stone-200 bg-white px-3 py-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-black/55">
+                    User found
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-black">
+                    {directorySearchResult.username}
+                  </p>
+                  <p className="text-xs text-black/65">{directorySearchResult.email}</p>
+                </div>
               ) : null}
-              {!loadingDirectoryUsers && directoryUsers.length === 0 ? (
-                <p className="mt-2 text-xs text-black/60">
-                  No users found. Create another account to start a private chat.
-                </p>
+              {directorySearchMessage ? (
+                <p className="mt-2 text-xs text-black/60">{directorySearchMessage}</p>
               ) : null}
+              <button
+                type="button"
+                onClick={() => {
+                  void onStartConversation();
+                }}
+                disabled={!directorySearchResult || searchingDirectoryUser || creatingConversation}
+                className="mt-2 w-full rounded-lg border border-stone-300 bg-amber-100 px-3 py-2 text-xs font-semibold text-black transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-stone-200"
+              >
+                {creatingConversation ? "Starting..." : "Start chat"}
+              </button>
             </div>
 
             <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-black">

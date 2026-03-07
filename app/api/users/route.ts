@@ -3,7 +3,9 @@ import { fail, ok } from "@/lib/api/responses";
 import { getCurrentUserFromRequest, serializePublicUser } from "@/lib/auth/current-user";
 import { prisma } from "@/lib/db";
 
-const MAX_USERS = 20;
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
 
 export async function GET(request: NextRequest) {
   const currentUser = await getCurrentUserFromRequest(request);
@@ -11,22 +13,19 @@ export async function GET(request: NextRequest) {
     return fail(401, "UNAUTHORIZED", "Authentication required.");
   }
 
-  const query = request.nextUrl.searchParams.get("query")?.trim();
+  const emailParam =
+    request.nextUrl.searchParams.get("email") ?? request.nextUrl.searchParams.get("query");
+  const email = emailParam ? normalizeEmail(emailParam) : "";
 
-  const users = await prisma.user.findMany({
+  if (!email) {
+    return ok({ users: [] });
+  }
+
+  const user = await prisma.user.findFirst({
     where: {
       id: { not: currentUser.id },
-      ...(query
-        ? {
-            OR: [
-              { username: { contains: query, mode: "insensitive" } },
-              { email: { contains: query, mode: "insensitive" } },
-            ],
-          }
-        : {}),
+      email: { equals: email, mode: "insensitive" },
     },
-    orderBy: [{ username: "asc" }],
-    take: MAX_USERS,
     select: {
       id: true,
       username: true,
@@ -36,6 +35,6 @@ export async function GET(request: NextRequest) {
   });
 
   return ok({
-    users: users.map((user) => serializePublicUser(user)),
+    users: user ? [serializePublicUser(user)] : [],
   });
 }

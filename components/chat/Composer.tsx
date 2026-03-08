@@ -181,7 +181,7 @@ export function Composer({
   onOpenCamera,
 }: ComposerProps) {
   const imagePickerInputRef = useRef<HTMLInputElement | null>(null);
-  const textInputRef = useRef<HTMLInputElement | null>(null);
+  const textInputRef = useRef<HTMLTextAreaElement | null>(null);
   const emojiButtonRef = useRef<HTMLButtonElement | null>(null);
   const attachmentButtonRef = useRef<HTMLButtonElement | null>(null);
   const attachmentDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -198,6 +198,13 @@ export function Composer({
       textInputRef.current?.focus();
     }
   }, [sendingMessage]);
+
+  useEffect(() => {
+    const textarea = textInputRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [draft]);
 
   useEffect(() => {
     if (!attachmentDropdownOpen) return;
@@ -401,7 +408,22 @@ export function Composer({
   );
 
   const onInputKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLInputElement>) => {
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        if (showShortcodeSuggestions) {
+          const suggestion = shortcodeSuggestions[highlightedSuggestionIndex];
+          if (suggestion) {
+            event.preventDefault();
+            applyShortcodeSuggestion(suggestion);
+          }
+          return;
+        }
+        // Plain Enter submits the form
+        event.preventDefault();
+        event.currentTarget.form?.requestSubmit();
+        return;
+      }
+
       if (!showShortcodeSuggestions) {
         return;
       }
@@ -420,7 +442,7 @@ export function Composer({
         return;
       }
 
-      if (event.key === "Enter" || event.key === "Tab") {
+      if (event.key === "Tab") {
         const suggestion = shortcodeSuggestions[highlightedSuggestionIndex];
         if (!suggestion) {
           return;
@@ -485,7 +507,7 @@ export function Composer({
         </div>
       ) : null}
 
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
         <div className="flex items-center gap-2">
           <div className="relative">
             <button
@@ -621,9 +643,10 @@ export function Composer({
             </div>
           ) : null}
 
-          <input
+          <textarea
             ref={textInputRef}
             value={draft}
+            rows={1}
             onChange={(event) => {
               const nextDraft = event.target.value;
               onDraftChange(nextDraft);
@@ -638,10 +661,10 @@ export function Composer({
             onKeyDown={onInputKeyDown}
             placeholder={
               selectedConversationId
-                ? "Type a private message (use :sm for emoji)"
+                ? "Type a message (Enter to send, Shift+Enter for new line)"
                 : "Start or select a conversation first"
             }
-            className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
+            className="w-full resize-none overflow-hidden rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
             disabled={isComposerDisabled}
           />
         </div>

@@ -7,6 +7,7 @@ import {
 } from "../chat/read-state";
 import { prisma } from "../db";
 import { verifyRealtimeToken } from "../realtime/token";
+import { initializeCallSocketServer, registerCallConnectionHandlers } from "./call-server";
 import {
   ChatMessageStatusUpdatedEvent,
   ChatNewMessageEvent,
@@ -454,6 +455,8 @@ async function handleMessageRead(
 }
 
 export function registerSocketHandlers(io: SocketServer) {
+  initializeCallSocketServer(io);
+
   io.use(async (socket, next) => {
     try {
       const realtimeToken = getSocketRealtimeToken(socket);
@@ -506,6 +509,7 @@ export function registerSocketHandlers(io: SocketServer) {
   io.on("connection", (socket) => {
     const currentUser = socket.data.user;
     socket.join(userRoom(currentUser.id));
+    registerCallConnectionHandlers(io, socket);
 
     socket.on("chat:send_message", async (payload, ack) => {
       try {

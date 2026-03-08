@@ -22,7 +22,9 @@ import {
   withPinProtectedRequestInit,
 } from "@/lib/auth/pin-client";
 import { BrandMark } from "@/components/BrandMark";
+import { CallOverlay } from "@/components/chat/CallOverlay";
 import { Composer } from "@/components/chat/Composer";
+import { useDesktopCallController } from "@/components/chat/useDesktopCallController";
 import { getDesktopBridge, isDesktopShell } from "@/lib/desktop-bridge";
 import { getRealtimeServerUrl, getRealtimeSocketPath } from "@/lib/realtime/config";
 import {
@@ -726,6 +728,7 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
   const [cameraFacingMode, setCameraFacingMode] = useState<CameraFacingMode>("environment");
   const [messagePanelFullscreen, setMessagePanelFullscreen] = useState(false);
   const [socketConnected, setSocketConnected] = useState(false);
+  const [socketInstance, setSocketInstance] = useState<SocketClient | null>(null);
   const [directoryQuery, setDirectoryQuery] = useState("");
   const [directorySearchResult, setDirectorySearchResult] = useState<PublicUser | null>(null);
   const [directorySearchMessage, setDirectorySearchMessage] = useState<string | null>(null);
@@ -768,6 +771,13 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
         ? "polling fallback active"
         : "paused (tab hidden)"
       : "offline";
+  const callController = useDesktopCallController({
+    currentUser: accountUser,
+    selectedConversation,
+    socket: socketInstance,
+    socketConnected,
+    desktopShell,
+  });
   const memberSinceLabel = formatJoinedDate(accountUser.createdAt);
   const normalizedProfileEmail = normalizeEmail(profileEmail);
   const profileHasChanges =
@@ -1898,6 +1908,7 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
           timeout: 5_000,
         });
         socketRef.current = socket;
+        setSocketInstance(socket);
 
         socket.on("connect", () => {
           socketAuthRefreshAttempts = 0;
@@ -1986,6 +1997,7 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
         socketRef.current.disconnect();
         socketRef.current = null;
       }
+      setSocketInstance(null);
     };
   }, [
     accountUser.id,
@@ -2264,6 +2276,28 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
                   : "No chat selected"}
               </h2>
               <div className="flex items-center gap-2">
+                {desktopShell ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void callController.startAudioCall()}
+                      disabled={!selectedConversation || !callController.canCall}
+                      title={callController.availabilityMessage ?? "Start a voice call"}
+                      className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-xs font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-black/40"
+                    >
+                      Voice call
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void callController.startVideoCall()}
+                      disabled={!selectedConversation || !callController.canCall}
+                      title={callController.availabilityMessage ?? "Start a video call"}
+                      className="rounded-lg border border-stone-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-black transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-black/40"
+                    >
+                      Video call
+                    </button>
+                  </>
+                ) : null}
                 {selectedConversation ? (
                   <button
                     type="button"
@@ -2670,6 +2704,39 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
             </div>
           </div>
         ) : null}
+
+        <CallOverlay
+          currentUserId={accountUser.id}
+          currentCall={callController.currentCall}
+          incomingCall={callController.incomingCall}
+          localMediaState={callController.localMediaState}
+          remoteMediaState={callController.remoteMediaState}
+          localCameraStream={callController.localCameraStream}
+          localScreenStream={callController.localScreenStream}
+          remoteCameraStream={callController.remoteCameraStream}
+          remoteScreenStream={callController.remoteScreenStream}
+          remoteAudioStream={callController.remoteAudioStream}
+          socketConnected={socketConnected}
+          callError={callController.callError}
+          isStartingCall={callController.isStartingCall}
+          isAcceptingCall={callController.isAcceptingCall}
+          screenSharePickerOpen={callController.screenSharePickerOpen}
+          screenShareSources={callController.screenShareSources}
+          screenShareSystemAudio={callController.screenShareSystemAudio}
+          screenShareLoading={callController.screenShareLoading}
+          callCapabilities={callController.callCapabilities}
+          onDismissCallError={callController.dismissCallError}
+          onCloseScreenSharePicker={callController.closeScreenSharePicker}
+          onSetScreenShareSystemAudio={callController.setScreenShareSystemAudio}
+          onAcceptIncomingCall={callController.acceptIncomingCall}
+          onRejectIncomingCall={callController.rejectIncomingCall}
+          onEndCurrentCall={callController.endCurrentCall}
+          onToggleMic={callController.toggleMic}
+          onToggleCamera={callController.toggleCamera}
+          onOpenScreenSharePicker={callController.openScreenSharePicker}
+          onStartScreenShare={callController.startScreenShare}
+          onStopScreenShare={callController.stopScreenShare}
+        />
       </div>
     </div>
   );

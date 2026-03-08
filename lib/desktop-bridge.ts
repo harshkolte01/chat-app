@@ -5,12 +5,33 @@ export type DesktopNotificationPayload = {
   messageId?: string | null;
 };
 
+export type DesktopDisplaySource = {
+  id: string;
+  name: string;
+  kind: "screen" | "window";
+  thumbnailDataUrl: string | null;
+  appIconDataUrl: string | null;
+};
+
+export type DesktopScreenShareSelection = {
+  sourceId: string;
+  includeSystemAudio: boolean;
+};
+
+export type DesktopCallCapabilities = {
+  platform: string;
+  systemAudioSharingSupported: boolean;
+};
+
 export type DesktopBridge = {
   isDesktop: true;
   showNotification: (payload: DesktopNotificationPayload) => Promise<void>;
   setBadgeCount: (count: number) => Promise<void>;
   flashWindow: () => Promise<void>;
   stopFlashWindow: () => Promise<void>;
+  listDisplaySources: () => Promise<DesktopDisplaySource[]>;
+  prepareScreenShare: (selection: DesktopScreenShareSelection) => Promise<void>;
+  getCallCapabilities: () => Promise<DesktopCallCapabilities>;
 };
 
 declare global {

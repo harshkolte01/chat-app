@@ -6,12 +6,21 @@ if (process.env.ELECTRON_RUN_AS_NODE === "1") {
   process.exit(1);
 }
 
-const { app, BrowserWindow, ipcMain, nativeImage, Notification, shell } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  desktopCapturer,
+  ipcMain,
+  nativeImage,
+  Notification,
+  shell,
+} = require("electron");
 const path = require("node:path");
 const { NEXT_APP_URL } = require("./next-app-url.cjs");
 
 let mainWindow = null;
 let unreadBadgeCount = 0;
+let pendingScreenShareSelection = null;
 const APP_NAME = "SecretChat";
 const APP_USER_MODEL_ID = "sec-chat.desktop";
 const APP_ICON_PATH = path.join(__dirname, "secretchat.png");
@@ -202,6 +211,72 @@ function stopFlashingMainWindow() {
   mainWindow.flashFrame(false);
 }
 
+function getCallCapabilities() {
+  return {
+    platform: process.platform,
+    systemAudioSharingSupported: process.platform === "win32",
+  };
+}
+
+function detectDisplaySourceKind(sourceId) {
+  return sourceId.startsWith("screen:") ? "screen" : "window";
+}
+
+async function listDisplaySources() {
+  const sources = await desktopCapturer.getSources({
+    types: ["screen", "window"],
+    fetchWindowIcons: true,
+    thumbnailSize: {
+      width: 480,
+      height: 270,
+    },
+  });
+
+  return sources.map((source) => ({
+    id: source.id,
+    name: source.name,
+    kind: detectDisplaySourceKind(source.id),
+    thumbnailDataUrl: source.thumbnail?.isEmpty() ? null : source.thumbnail.toDataURL(),
+    appIconDataUrl: source.appIcon?.isEmpty() ? null : source.appIcon.toDataURL(),
+  }));
+}
+
+function registerDisplayMediaHandler(window) {
+  window.webContents.session.setDisplayMediaRequestHandler(async (_request, callback) => {
+    const selection = pendingScreenShareSelection;
+    pendingScreenShareSelection = null;
+
+    if (!selection?.sourceId) {
+      callback({});
+      return;
+    }
+
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ["screen", "window"],
+        fetchWindowIcons: false,
+        thumbnailSize: {
+          width: 1,
+          height: 1,
+        },
+      });
+      const selectedSource = sources.find((source) => source.id === selection.sourceId);
+      if (!selectedSource) {
+        callback({});
+        return;
+      }
+
+      callback({
+        video: selectedSource,
+        audio:
+          selection.includeSystemAudio && process.platform === "win32" ? "loopback" : undefined,
+      });
+    } catch {
+      callback({});
+    }
+  });
+}
+
 function registerDesktopIpc() {
   ipcMain.handle("desktop:show-notification", async (_event, payload) => {
     const title = typeof payload?.title === "string" ? payload.title.trim() : "";
@@ -235,6 +310,26 @@ function registerDesktopIpc() {
 
   ipcMain.handle("desktop:stop-flash-window", async () => {
     stopFlashingMainWindow();
+  });
+
+  ipcMain.handle("desktop:list-display-sources", async () => {
+    return listDisplaySources();
+  });
+
+  ipcMain.handle("desktop:prepare-screen-share", async (_event, selection) => {
+    const sourceId = typeof selection?.sourceId === "string" ? selection.sourceId.trim() : "";
+    if (!sourceId) {
+      throw new Error("sourceId is required.");
+    }
+
+    pendingScreenShareSelection = {
+      sourceId,
+      includeSystemAudio: selection?.includeSystemAudio === true,
+    };
+  });
+
+  ipcMain.handle("desktop:get-call-capabilities", async () => {
+    return getCallCapabilities();
   });
 }
 
@@ -283,6 +378,7 @@ function createMainWindow() {
     return { action: "deny" };
   });
 
+  registerDisplayMediaHandler(mainWindow);
   applyBadgeCount(unreadBadgeCount);
   void mainWindow.loadURL(resolveAppUrl());
 }

@@ -1,6 +1,6 @@
 {
   "name": "chat-app",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Secure realtime desktop and web chat for private team conversations.",
   "author": "SecretChat",
@@ -13,6 +13,14 @@
     "realtime:start": "node realtime-server/dist/realtime-server/src/index.js",
     "desktop:start": "set ELECTRON_RUN_AS_NODE=&& electron ./desktop-chat-app/main.cjs",
     "desktop:dev": "set ELECTRON_RUN_AS_NODE=&& electron ./desktop-chat-app/main.cjs",
+    "version:patch": "npm version patch --no-git-tag-version",
+    "version:minor": "npm version minor --no-git-tag-version",
+    "version:major": "npm version major --no-git-tag-version",
+    "release:clean": "node -e \"require('node:fs').rmSync('release', { recursive: true, force: true })\"",
+    "release:check": "npm run lint && npm run build && npm run realtime:build",
+    "release:win": "npm run release:clean && npm run release:check && electron-builder --win nsis",
+    "release:portable": "npm run release:clean && npm run release:check && electron-builder --win portable",
+    "release:dir": "npm run release:clean && npm run release:check && electron-builder --dir",
     "dist:win": "electron-builder --win nsis",
     "dist:portable": "electron-builder --win portable",
     "dist:dir": "electron-builder --dir",
@@ -25,6 +33,9 @@
   "build": {
     "appId": "sec-chat.desktop",
     "productName": "SecretChat",
+    "asar": true,
+    "compression": "maximum",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
     "copyright": "Copyright © 2026 SecretChat",
     "toolsets": {
       "winCodeSign": "1.1.0"
@@ -43,6 +54,11 @@
         "portable"
       ],
       "icon": "secretchat.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
     }
   },
   "dependencies": {

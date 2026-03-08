@@ -1,3 +1,17 @@
+import type {
+  CallAckData,
+  CallActionPayload,
+  CallIncomingEvent,
+  CallMediaStateEvent,
+  CallMediaStatePayload,
+  CallSignalEvent,
+  CallSignalPayload,
+  CallStateChangedEvent,
+  CallSyncStateEvent,
+  StartCallAckData,
+  StartCallPayload,
+} from "../call-contracts";
+
 export type ChatMessageType = "TEXT" | "IMAGE";
 export type ChatMessageStatus = "SENT" | "DELIVERED" | "READ";
 export type IncomingChatMessageType = "text" | "image" | "TEXT" | "IMAGE";
@@ -81,6 +95,11 @@ export type ChatMessageStatusUpdatedEvent = {
 export type ServerToClientEvents = {
   "chat:new_message": (payload: ChatNewMessageEvent) => void;
   "chat:message_status_updated": (payload: ChatMessageStatusUpdatedEvent) => void;
+  "call:incoming": (payload: CallIncomingEvent) => void;
+  "call:state_changed": (payload: CallStateChangedEvent) => void;
+  "call:signal": (payload: CallSignalEvent) => void;
+  "call:media_state": (payload: CallMediaStateEvent) => void;
+  "call:sync_state": (payload: CallSyncStateEvent) => void;
 };
 
 export type ClientToServerEvents = {
@@ -95,6 +114,34 @@ export type ClientToServerEvents = {
   "chat:message_read": (
     payload: MessageReadPayload,
     ack?: (response: SocketAckResponse<{ updatedCount: number }>) => void,
+  ) => void;
+  "call:start": (
+    payload: StartCallPayload,
+    ack: (response: SocketAckResponse<StartCallAckData>) => void,
+  ) => void;
+  "call:accept": (
+    payload: CallActionPayload,
+    ack?: (response: SocketAckResponse<CallAckData>) => void,
+  ) => void;
+  "call:reject": (
+    payload: CallActionPayload,
+    ack?: (response: SocketAckResponse<CallAckData>) => void,
+  ) => void;
+  "call:cancel": (
+    payload: CallActionPayload,
+    ack?: (response: SocketAckResponse<CallAckData>) => void,
+  ) => void;
+  "call:hangup": (
+    payload: CallActionPayload,
+    ack?: (response: SocketAckResponse<CallAckData>) => void,
+  ) => void;
+  "call:signal": (
+    payload: CallSignalPayload,
+    ack?: (response: SocketAckResponse) => void,
+  ) => void;
+  "call:media_state": (
+    payload: CallMediaStatePayload,
+    ack?: (response: SocketAckResponse<CallAckData>) => void,
   ) => void;
 };
 

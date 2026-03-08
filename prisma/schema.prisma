@@ -25,6 +25,21 @@ enum MessageStatus {
   READ
 }
 
+enum CallMode {
+  AUDIO
+  VIDEO
+}
+
+enum CallStatus {
+  RINGING
+  ACTIVE
+  REJECTED
+  MISSED
+  CANCELED
+  ENDED
+  FAILED
+}
+
 // ─────────────────────────────────────────────
 // Models
 // ─────────────────────────────────────────────
@@ -46,6 +61,9 @@ model User {
 
   messages          Message[]
   userConversations UserConversation[]
+  outgoingCalls     CallSession[] @relation("CallSessionCaller")
+  incomingCalls     CallSession[] @relation("CallSessionCallee")
+  endedCalls        CallSession[] @relation("CallSessionEndedBy")
 }
 
 model Conversation {
@@ -63,6 +81,7 @@ model Conversation {
   userB             User               @relation("ConversationUserB", fields: [userBId], references: [id])
   messages          Message[]
   userConversations UserConversation[]
+  calls             CallSession[]
 
   @@unique([userAId, userBId])
 }
@@ -100,4 +119,30 @@ model UserConversation {
   user         User         @relation(fields: [userId], references: [id])
 
   @@id([conversationId, userId])
+}
+
+model CallSession {
+  id             String     @id @default(uuid()) @db.Uuid
+  conversationId String     @db.Uuid
+  callerId       String     @db.Uuid
+  calleeId       String     @db.Uuid
+  mode           CallMode
+  status         CallStatus @default(RINGING)
+  failureReason  String?
+  answeredAt     DateTime?
+  endedAt        DateTime?
+  endedById      String?    @db.Uuid
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  caller       User         @relation("CallSessionCaller", fields: [callerId], references: [id])
+  callee       User         @relation("CallSessionCallee", fields: [calleeId], references: [id])
+  endedBy      User?        @relation("CallSessionEndedBy", fields: [endedById], references: [id])
+
+  @@index([conversationId, createdAt])
+  @@index([conversationId, status, createdAt])
+  @@index([callerId, status])
+  @@index([calleeId, status])
+  @@index([status, createdAt])
 }

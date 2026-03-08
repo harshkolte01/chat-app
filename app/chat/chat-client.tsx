@@ -1892,8 +1892,9 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
           auth: {
             realtimeToken: realtimeTokenResponse.realtimeToken,
           },
-          transports: ["websocket", "polling"],
-          reconnectionAttempts: 3,
+          // Establish polling first, then upgrade to WebSocket when available.
+          transports: ["polling", "websocket"],
+          tryAllTransports: true,
           timeout: 5_000,
         });
         socketRef.current = socket;

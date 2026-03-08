@@ -236,8 +236,9 @@ async function listDisplaySources() {
     id: source.id,
     name: source.name,
     kind: detectDisplaySourceKind(source.id),
-    thumbnailDataUrl: source.thumbnail?.isEmpty() ? null : source.thumbnail.toDataURL(),
-    appIconDataUrl: source.appIcon?.isEmpty() ? null : source.appIcon.toDataURL(),
+    thumbnailDataUrl:
+      source.thumbnail && !source.thumbnail.isEmpty() ? source.thumbnail.toDataURL() : null,
+    appIconDataUrl: source.appIcon && !source.appIcon.isEmpty() ? source.appIcon.toDataURL() : null,
   }));
 }
 

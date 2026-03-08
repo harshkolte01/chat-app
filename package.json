@@ -1,6 +1,6 @@
 {
   "name": "chat-app",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Secure realtime desktop and web chat for private team conversations.",
   "author": "SecretChat",

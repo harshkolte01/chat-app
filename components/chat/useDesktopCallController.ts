@@ -153,6 +153,7 @@ export function useDesktopCallController(
   });
   const currentCallRef = useRef<CallSessionSnapshot | null>(null);
   const incomingCallRef = useRef<CallSessionSnapshot | null>(null);
+  const knownCallsRef = useRef<Map<string, CallSessionSnapshot>>(new Map());
   const localMediaStateRef = useRef<CallMediaState>(createInactiveCallMediaState());
   const localBaseStreamRef = useRef<MediaStream | null>(null);
   const localScreenStreamRef = useRef<MediaStream | null>(null);
@@ -185,12 +186,43 @@ export function useDesktopCallController(
       ? "Calling is unavailable until the realtime server reconnects."
       : null;
 
+  function syncKnownCall(nextCall: CallSessionSnapshot | null) {
+    if (!nextCall) {
+      return;
+    }
+
+    knownCallsRef.current.set(nextCall.id, nextCall);
+  }
+
+  function removeKnownCall(callId: string) {
+    knownCallsRef.current.delete(callId);
+  }
+
+  function setCurrentCallState(nextCall: CallSessionSnapshot | null) {
+    currentCallRef.current = nextCall;
+    syncKnownCall(nextCall);
+    setCurrentCall(nextCall);
+  }
+
+  function setIncomingCallState(nextCall: CallSessionSnapshot | null) {
+    incomingCallRef.current = nextCall;
+    syncKnownCall(nextCall);
+    setIncomingCall(nextCall);
+  }
+
   function setLocalMediaStateWithSnapshot(nextState: CallMediaState) {
     localMediaStateRef.current = nextState;
     setLocalMediaState(nextState);
-    setCurrentCall((previous) =>
-      previous ? updateCallSnapshotMediaState(previous, currentUser.id, nextState) : previous,
-    );
+    setCurrentCall((previous) => {
+      if (!previous) {
+        return previous;
+      }
+
+      const nextCall = updateCallSnapshotMediaState(previous, currentUser.id, nextState);
+      currentCallRef.current = nextCall;
+      syncKnownCall(nextCall);
+      return nextCall;
+    });
   }
 
   function setRemoteCameraTrack(track: MediaStreamTrack | null) {
@@ -512,10 +544,11 @@ export function useDesktopCallController(
 
   const handleCallStateChanged = useEffectEvent(async (payload: CallStateChangedEvent) => {
     const { call } = payload;
+    syncKnownCall(call);
 
     if (call.status === "RINGING") {
       if (call.callee.id === currentUser.id) {
-        setIncomingCall(call);
+        setIncomingCallState(call);
         applyMediaStateSnapshot(call);
 
         const desktop = getDesktopBridge();
@@ -528,7 +561,7 @@ export function useDesktopCallController(
           void desktop.flashWindow();
         }
       } else if (call.caller.id === currentUser.id) {
-        setCurrentCall(call);
+        setCurrentCallState(call);
         applyMediaStateSnapshot(call);
       }
 
@@ -536,8 +569,10 @@ export function useDesktopCallController(
     }
 
     if (call.status === "ACTIVE") {
-      setIncomingCall((previous) => (previous?.id === call.id ? null : previous));
-      setCurrentCall(call);
+      if (incomingCallRef.current?.id === call.id) {
+        setIncomingCallState(null);
+      }
+      setCurrentCallState(call);
       applyMediaStateSnapshot(call);
 
       const desktop = getDesktopBridge();
@@ -572,8 +607,12 @@ export function useDesktopCallController(
         return;
       }
 
-      setCurrentCall((previous) => (previous?.id === call.id ? call : previous));
-      setIncomingCall((previous) => (previous?.id === call.id ? null : previous));
+      if (wasCurrentCall) {
+        setCurrentCallState(call);
+      }
+      if (wasIncomingCall) {
+        setIncomingCallState(null);
+      }
       await teardownCallMedia();
 
       const desktop = getDesktopBridge();
@@ -586,8 +625,13 @@ export function useDesktopCallController(
       }
 
       window.setTimeout(() => {
-        setCurrentCall((previous) => (previous?.id === call.id ? null : previous));
-        setIncomingCall((previous) => (previous?.id === call.id ? null : previous));
+        if (currentCallRef.current?.id === call.id) {
+          setCurrentCallState(null);
+        }
+        if (incomingCallRef.current?.id === call.id) {
+          setIncomingCallState(null);
+        }
+        removeKnownCall(call.id);
       }, 1_000);
     }
   });
@@ -596,8 +640,13 @@ export function useDesktopCallController(
     callId: string;
     signal: CallSignalMessage;
   }) => {
-    const activeCall = currentCallRef.current;
-    if (!activeCall || activeCall.id !== payload.callId) {
+    const activeCall =
+      currentCallRef.current?.id === payload.callId
+        ? currentCallRef.current
+        : incomingCallRef.current?.id === payload.callId
+          ? incomingCallRef.current
+          : knownCallsRef.current.get(payload.callId) ?? null;
+    if (!activeCall) {
       return;
     }
 
@@ -641,11 +690,16 @@ export function useDesktopCallController(
     }
 
     setRemoteMediaState(payload.mediaState);
-    setCurrentCall((previous) =>
-      previous && previous.id === payload.callId
-        ? updateCallSnapshotMediaState(previous, payload.userId, payload.mediaState)
-        : previous,
-    );
+    setCurrentCall((previous) => {
+      if (!previous || previous.id !== payload.callId) {
+        return previous;
+      }
+
+      const nextCall = updateCallSnapshotMediaState(previous, payload.userId, payload.mediaState);
+      currentCallRef.current = nextCall;
+      syncKnownCall(nextCall);
+      return nextCall;
+    });
   });
 
   const handleCallSyncState = useEffectEvent((payload: CallSyncStateEvent) => {
@@ -655,26 +709,18 @@ export function useDesktopCallController(
     }
 
     if (nextCall.status === "RINGING" && nextCall.callee.id === currentUser.id) {
-      setIncomingCall(nextCall);
+      setIncomingCallState(nextCall);
       applyMediaStateSnapshot(nextCall);
       return;
     }
 
-    setCurrentCall(nextCall);
+    setCurrentCallState(nextCall);
     applyMediaStateSnapshot(nextCall);
   });
 
   const handleUnmount = useEffectEvent(() => {
     void teardownCallMedia();
   });
-
-  useEffect(() => {
-    currentCallRef.current = currentCall;
-  }, [currentCall]);
-
-  useEffect(() => {
-    incomingCallRef.current = incomingCall;
-  }, [incomingCall]);
 
   useEffect(() => {
     localMediaStateRef.current = localMediaState;
@@ -767,8 +813,8 @@ export function useDesktopCallController(
       }
 
       const nextCall = updateCallSnapshotMediaState(response.data.call, currentUser.id, nextLocalState);
-      setIncomingCall(null);
-      setCurrentCall(nextCall);
+      setIncomingCallState(null);
+      setCurrentCallState(nextCall);
       setRemoteMediaState(getRemoteParticipantMediaState(nextCall, currentUser.id));
     } catch (error) {
       await teardownCallMedia();
@@ -796,8 +842,8 @@ export function useDesktopCallController(
       }
 
       const activeCall = updateCallSnapshotMediaState(response.data.call, currentUser.id, nextLocalState);
-      setIncomingCall(null);
-      setCurrentCall(activeCall);
+      setIncomingCallState(null);
+      setCurrentCallState(activeCall);
       setRemoteMediaState(getRemoteParticipantMediaState(activeCall, currentUser.id));
       await ensurePeerConnection(activeCall);
       await syncPeerConnectionTracks();

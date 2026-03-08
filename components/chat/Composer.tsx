@@ -183,7 +183,10 @@ export function Composer({
   const imagePickerInputRef = useRef<HTMLInputElement | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
   const emojiButtonRef = useRef<HTMLButtonElement | null>(null);
+  const attachmentButtonRef = useRef<HTMLButtonElement | null>(null);
+  const attachmentDropdownRef = useRef<HTMLDivElement | null>(null);
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
+  const [attachmentDropdownOpen, setAttachmentDropdownOpen] = useState(false);
   const [shortcodeToken, setShortcodeToken] = useState<ShortcodeToken | null>(null);
   const [shortcodeSuggestions, setShortcodeSuggestions] = useState<EmojiSuggestion[]>([]);
   const [highlightedSuggestionIndex, setHighlightedSuggestionIndex] = useState(0);
@@ -195,6 +198,21 @@ export function Composer({
       textInputRef.current?.focus();
     }
   }, [sendingMessage]);
+
+  useEffect(() => {
+    if (!attachmentDropdownOpen) return;
+    function handleClickOutside(event: MouseEvent) {
+      const target = event.target as Node;
+      if (
+        !attachmentButtonRef.current?.contains(target) &&
+        !attachmentDropdownRef.current?.contains(target)
+      ) {
+        setAttachmentDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [attachmentDropdownOpen]);
 
   const isComposerDisabled = !selectedConversationId || sendingMessage || uploadingImage;
   const areActionButtonsDisabled =
@@ -431,6 +449,7 @@ export function Composer({
     <form
       onSubmit={(event) => {
         setEmojiPickerOpen(false);
+        setAttachmentDropdownOpen(false);
         clearShortcodeSuggestions();
         void onSendMessage(event);
       }}
@@ -468,31 +487,76 @@ export function Composer({
 
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              setEmojiPickerOpen(false);
-              clearShortcodeSuggestions();
-              imagePickerInputRef.current?.click();
-            }}
-            disabled={areActionButtonsDisabled}
-            className="rounded-xl border border-stone-300 bg-white px-3 py-2 text-xs font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-200"
-          >
-            {uploadingImage ? "Uploading..." : "Photo"}
-          </button>
+          <div className="relative">
+            <button
+              ref={attachmentButtonRef}
+              type="button"
+              onClick={() => {
+                setEmojiPickerOpen(false);
+                clearShortcodeSuggestions();
+                setAttachmentDropdownOpen((prev) => !prev);
+              }}
+              disabled={areActionButtonsDisabled}
+              aria-label="Attach photo or camera"
+              aria-haspopup="menu"
+              aria-expanded={attachmentDropdownOpen}
+              className="rounded-xl border border-stone-300 bg-white px-3 py-2 text-xs font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-200"
+            >
+              {uploadingImage ? (
+                <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4 animate-spin" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                </svg>
+              ) : cameraStarting ? (
+                <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4 animate-spin" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                </svg>
+              ) : (
+                <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66L9.41 17.41a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                </svg>
+              )}
+            </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              setEmojiPickerOpen(false);
-              clearShortcodeSuggestions();
-              void onOpenCamera();
-            }}
-            disabled={areActionButtonsDisabled}
-            className="rounded-xl border border-stone-300 bg-white px-3 py-2 text-xs font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-200"
-          >
-            {cameraStarting ? "Opening..." : "Camera"}
-          </button>
+            {attachmentDropdownOpen && (
+              <div
+                ref={attachmentDropdownRef}
+                role="menu"
+                className="absolute bottom-[calc(100%+0.5rem)] left-0 z-90 min-w-40 overflow-hidden rounded-xl border border-stone-200 bg-white shadow-[0_8px_24px_rgba(17,17,17,0.12)]"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setAttachmentDropdownOpen(false);
+                    imagePickerInputRef.current?.click();
+                  }}
+                  className="flex w-full items-center gap-3 px-4 py-2.5 text-sm font-medium text-black transition hover:bg-stone-100"
+                >
+                  <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                    <circle cx="8.5" cy="8.5" r="1.5" />
+                    <polyline points="21 15 16 10 5 21" />
+                  </svg>
+                  Upload Photo
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setAttachmentDropdownOpen(false);
+                    void onOpenCamera();
+                  }}
+                  className="flex w-full items-center gap-3 px-4 py-2.5 text-sm font-medium text-black transition hover:bg-stone-100"
+                >
+                  <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                    <circle cx="12" cy="13" r="4" />
+                  </svg>
+                  Open Camera
+                </button>
+              </div>
+            )}
+          </div>
 
           <div className="relative">
             <button
@@ -536,7 +600,7 @@ export function Composer({
 
         <div className="relative w-full flex-1">
           {showShortcodeSuggestions ? (
-            <div className="absolute bottom-[calc(100%+0.375rem)] left-0 right-0 z-[80] overflow-hidden rounded-xl border border-stone-300 bg-white shadow-[0_14px_30px_rgba(17,17,17,0.12)]">
+            <div className="absolute bottom-[calc(100%+0.375rem)] left-0 right-0 z-80 overflow-hidden rounded-xl border border-stone-300 bg-white shadow-[0_14px_30px_rgba(17,17,17,0.12)]">
               {shortcodeSuggestions.map((suggestion, index) => (
                 <button
                   key={`${suggestion.id}-${suggestion.shortcode}`}

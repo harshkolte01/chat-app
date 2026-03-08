@@ -190,6 +190,12 @@ export function Composer({
   const searchIndexRef = useRef<EmojiSearchIndex | null>(null);
   const searchInitPromiseRef = useRef<Promise<void> | null>(null);
 
+  useEffect(() => {
+    if (!sendingMessage) {
+      textInputRef.current?.focus();
+    }
+  }, [sendingMessage]);
+
   const isComposerDisabled = !selectedConversationId || sendingMessage || uploadingImage;
   const areActionButtonsDisabled =
     !selectedConversationId || uploadingImage || sendingMessage || cameraStarting;

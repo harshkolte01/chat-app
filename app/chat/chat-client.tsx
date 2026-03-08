@@ -2389,7 +2389,7 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
                             onClick={() => setLightboxUrl(normalizedImageUrl)}
                           />
                         ) : (
-                          <p>{message.text ?? "[unsupported message]"}</p>
+                          <p className="whitespace-pre-wrap break-words">{message.text ?? "[unsupported message]"}</p>
                         )}
                         <p className="mt-1 text-xs opacity-70">
                           {new Date(message.createdAt).toLocaleString()}

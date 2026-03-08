@@ -646,7 +646,7 @@ export function Composer({
           <textarea
             ref={textInputRef}
             value={draft}
-            rows={1}
+            rows={2}
             onChange={(event) => {
               const nextDraft = event.target.value;
               onDraftChange(nextDraft);
@@ -661,10 +661,10 @@ export function Composer({
             onKeyDown={onInputKeyDown}
             placeholder={
               selectedConversationId
-                ? "Type a message (Enter to send, Shift+Enter for new line)"
+                ? "Message… (Shift+Enter for new line)"
                 : "Start or select a conversation first"
             }
-            className="w-full resize-none overflow-hidden rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300"
+            className="w-full resize-none overflow-hidden rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300 min-h-[3rem]"
             disabled={isComposerDisabled}
           />
         </div>

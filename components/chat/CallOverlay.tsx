@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CallMediaState, CallSessionSnapshot } from "@/lib/call-contracts";
 import type {
   DesktopCallCapabilities,
@@ -20,6 +20,7 @@ type CallOverlayProps = {
   remoteAudioStream: MediaStream | null;
   socketConnected: boolean;
   callError: string | null;
+  iceConnectionState: RTCIceConnectionState | null;
   isStartingCall: boolean;
   isAcceptingCall: boolean;
   screenSharePickerOpen: boolean;
@@ -151,6 +152,108 @@ function AudioSink({ stream }: { stream: MediaStream | null }) {
   return <audio ref={audioRef} autoPlay playsInline />;
 }
 
+function IceBadge({ state }: { state: RTCIceConnectionState | null }) {
+  if (!state) return null;
+  const map: Record<RTCIceConnectionState, { label: string; color: string }> = {
+    new:          { label: "ICE: new",           color: "text-white/50" },
+    checking:     { label: "ICE: checking…",     color: "text-amber-300" },
+    connected:    { label: "ICE: connected",     color: "text-emerald-300" },
+    completed:    { label: "ICE: completed",     color: "text-emerald-300" },
+    disconnected: { label: "ICE: disconnected",  color: "text-rose-300" },
+    failed:       { label: "ICE: failed",        color: "text-rose-400 font-bold" },
+    closed:       { label: "ICE: closed",        color: "text-white/50" },
+  };
+  const entry = map[state];
+  return (
+    <span className={`text-[10px] font-semibold uppercase tracking-[0.2em] ${entry.color}`}>
+      {entry.label}
+    </span>
+  );
+}
+
+function MicTest() {
+  const [active, setActive] = useState(false);
+  const [level, setLevel] = useState(0);
+  const streamRef = useRef<MediaStream | null>(null);
+  const animRef = useRef<number | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const dataRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
+
+  function stop() {
+    if (animRef.current) cancelAnimationFrame(animRef.current);
+    if (streamRef.current) {
+      for (const t of streamRef.current.getTracks()) t.stop();
+    }
+    streamRef.current = null;
+    analyserRef.current = null;
+    dataRef.current = null;
+    setLevel(0);
+    setActive(false);
+  }
+
+  async function start() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      streamRef.current = stream;
+      const ctx = new AudioContext();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyserRef.current = analyser;
+      dataRef.current = new Uint8Array(analyser.frequencyBinCount);
+      setActive(true);
+
+      function tick() {
+        if (!analyserRef.current || !dataRef.current) return;
+        analyserRef.current.getByteFrequencyData(dataRef.current);
+        const avg = dataRef.current.reduce((s, v) => s + v, 0) / dataRef.current.length;
+        setLevel(Math.min(100, Math.round((avg / 128) * 100)));
+        animRef.current = requestAnimationFrame(tick);
+      }
+      tick();
+    } catch {
+      stop();
+    }
+  }
+
+  useEffect(() => () => stop(), []);
+
+  return (
+    <div className="rounded-[24px] border border-white/10 bg-black/18 p-4">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-amber-200/85">Mic test</p>
+      {active ? (
+        <>
+          <div className="mt-3 h-2.5 w-full overflow-hidden rounded-full bg-white/10">
+            <div
+              className="h-full rounded-full bg-emerald-400 transition-all duration-75"
+              style={{ width: `${level}%` }}
+            />
+          </div>
+          <p className="mt-2 text-xs text-white/55">
+            {level === 0 ? "No signal — check mic permissions" : "Signal detected — mic is working"}
+          </p>
+          <button
+            type="button"
+            onClick={stop}
+            className="mt-3 w-full rounded-2xl border border-white/12 bg-white/8 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/14"
+          >
+            Stop test
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
+          onClick={() => void start()}
+          className="mt-3 w-full rounded-2xl border border-white/12 bg-white/8 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/14"
+        >
+          Test microphone
+        </button>
+      )}
+    </div>
+  );
+}
+
 function SourceTile({
   source,
   onSelect,
@@ -219,6 +322,7 @@ export function CallOverlay(props: CallOverlayProps) {
     remoteAudioStream,
     socketConnected,
     callError,
+    iceConnectionState,
     isStartingCall,
     isAcceptingCall,
     screenSharePickerOpen,
@@ -321,6 +425,11 @@ export function CallOverlay(props: CallOverlayProps) {
                   {getCallStatusLabel(activeCall, currentUserId)}
                   {!socketConnected ? " • signaling reconnecting" : ""}
                 </p>
+                {iceConnectionState ? (
+                  <p className="mt-1">
+                    <IceBadge state={iceConnectionState} />
+                  </p>
+                ) : null}
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="rounded-full border border-white/12 bg-white/8 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.2em] text-white/80">
@@ -507,6 +616,8 @@ export function CallOverlay(props: CallOverlayProps) {
                     </button>
                   </div>
                 </div>
+
+                <MicTest />
               </aside>
             </div>
 

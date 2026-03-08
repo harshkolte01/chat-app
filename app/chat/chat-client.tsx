@@ -2744,6 +2744,7 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
           remoteAudioStream={callController.remoteAudioStream}
           socketConnected={socketConnected}
           callError={callController.callError}
+          iceConnectionState={callController.iceConnectionState}
           isStartingCall={callController.isStartingCall}
           isAcceptingCall={callController.isAcceptingCall}
           screenSharePickerOpen={callController.screenSharePickerOpen}

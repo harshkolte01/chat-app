@@ -73,6 +73,7 @@ export type DesktopCallController = {
   screenShareSystemAudio: boolean;
   screenShareLoading: boolean;
   callCapabilities: DesktopCallCapabilities | null;
+  iceConnectionState: RTCIceConnectionState | null;
   dismissCallError: () => void;
   closeScreenSharePicker: () => void;
   setScreenShareSystemAudio: (nextValue: boolean) => void;
@@ -178,6 +179,7 @@ export function useDesktopCallController(
   const [remoteCameraStream, setRemoteCameraStream] = useState<MediaStream | null>(null);
   const [remoteScreenStream, setRemoteScreenStream] = useState<MediaStream | null>(null);
   const [remoteAudioStream, setRemoteAudioStream] = useState<MediaStream | null>(null);
+  const [iceConnectionState, setIceConnectionState] = useState<RTCIceConnectionState | null>(null);
 
   const canCall = desktopShell && Boolean(selectedConversation) && !currentCall && !incomingCall;
   const availabilityMessage = !desktopShell
@@ -369,6 +371,7 @@ export function useDesktopCallController(
       existingPeerConnection.onicecandidate = null;
       existingPeerConnection.ontrack = null;
       existingPeerConnection.onconnectionstatechange = null;
+      existingPeerConnection.oniceconnectionstatechange = null;
       existingPeerConnection.close();
       peerConnectionRef.current = null;
     }
@@ -394,6 +397,7 @@ export function useDesktopCallController(
     setRemoteMediaState(createInactiveCallMediaState());
     setScreenSharePickerOpen(false);
     setScreenShareSources([]);
+    setIceConnectionState(null);
   }
 
   async function captureLocalMedia(mode: "AUDIO" | "VIDEO") {
@@ -534,6 +538,10 @@ export function useDesktopCallController(
       if (peerConnection.connectionState === "failed") {
         setCallError("The media connection failed. End the call and try again.");
       }
+    };
+
+    peerConnection.oniceconnectionstatechange = () => {
+      setIceConnectionState(peerConnection.iceConnectionState);
     };
 
     peerConnectionRef.current = peerConnection;
@@ -1074,6 +1082,7 @@ export function useDesktopCallController(
     screenShareSystemAudio,
     screenShareLoading,
     callCapabilities,
+    iceConnectionState,
     dismissCallError: () => setCallError(null),
     closeScreenSharePicker: () => setScreenSharePickerOpen(false),
     setScreenShareSystemAudio,

@@ -203,7 +203,9 @@ export function Composer({
     const textarea = textInputRef.current;
     if (!textarea) return;
     textarea.style.height = "auto";
-    textarea.style.height = `${textarea.scrollHeight}px`;
+    const maxHeight = 160; // ~5 lines
+    textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [draft]);
 
   useEffect(() => {
@@ -664,7 +666,7 @@ export function Composer({
                 ? "Message… (Shift+Enter for new line)"
                 : "Start or select a conversation first"
             }
-            className="w-full resize-none overflow-hidden rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300 min-h-[3rem]"
+            className="w-full resize-none rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm text-black outline-none transition focus:border-stone-700 focus:ring-2 focus:ring-stone-300 min-h-[3rem]"
             disabled={isComposerDisabled}
           />
         </div>

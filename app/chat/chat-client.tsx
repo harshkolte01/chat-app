@@ -750,6 +750,7 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
   const [isBrowserOnline, setIsBrowserOnline] = useState(
     () => (typeof navigator === "undefined" ? true : navigator.onLine),
   );
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const desktopShell = isDesktopShell();
   const realtimeServerUrl = getRealtimeServerUrl();
   const realtimeSocketPath = getRealtimeSocketPath();
@@ -2379,15 +2380,14 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
                           </div>
                         ) : null}
                         {message.type === "IMAGE" && normalizedImageUrl ? (
-                          <a href={normalizedImageUrl} target="_blank" rel="noopener noreferrer">
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img
-                              src={normalizedImageUrl}
-                              alt="Chat upload"
-                              className="max-h-64 w-auto max-w-full rounded-lg object-cover"
-                              loading="lazy"
-                            />
-                          </a>
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={normalizedImageUrl}
+                            alt="Chat upload"
+                            className="max-h-64 w-auto max-w-full cursor-zoom-in rounded-lg object-cover"
+                            loading="lazy"
+                            onClick={() => setLightboxUrl(normalizedImageUrl)}
+                          />
                         ) : (
                           <p>{message.text ?? "[unsupported message]"}</p>
                         )}
@@ -2702,6 +2702,32 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
                 </button>
               </div>
             </div>
+          </div>
+        ) : null}
+
+        {lightboxUrl ? (
+          <div
+            className="fixed inset-0 z-9999 flex items-center justify-center bg-black/80"
+            onClick={() => setLightboxUrl(null)}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={lightboxUrl}
+              alt="Full size preview"
+              className="max-h-[90vh] max-w-[90vw] rounded-xl object-contain shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            />
+            <button
+              type="button"
+              onClick={() => setLightboxUrl(null)}
+              className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-white/15 text-white transition hover:bg-white/30"
+              aria-label="Close image preview"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
           </div>
         ) : null}
 

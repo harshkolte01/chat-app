@@ -24,6 +24,11 @@ import {
 import { BrandMark } from "@/components/BrandMark";
 import { Composer } from "@/components/chat/Composer";
 import { getDesktopBridge, isDesktopShell } from "@/lib/desktop-bridge";
+import { getRealtimeServerUrl, getRealtimeSocketPath } from "@/lib/realtime/config";
+import {
+  isRealtimeTokenRefreshErrorCode,
+  RealtimeTokenResponse,
+} from "@/lib/realtime/contracts";
 import {
   ChatMessageStatusUpdatedEvent,
   ChatNewMessageEvent,
@@ -232,14 +237,6 @@ function normalizeMessageImageUrl(imageKey: string): string {
   return trimmed;
 }
 
-function shouldDisableRealtimeSocket(): boolean {
-  if (typeof window === "undefined") {
-    return false;
-  }
-
-  return window.location.hostname.toLowerCase().endsWith(".vercel.app");
-}
-
 function shouldUseUploadRelay(uploadUrl: string): boolean {
   if (typeof window === "undefined") {
     return false;
@@ -291,6 +288,13 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   }
 
   return payload as T;
+}
+
+async function fetchRealtimeToken(): Promise<RealtimeTokenResponse> {
+  return fetchJson<RealtimeTokenResponse>("/api/realtime/token", {
+    method: "POST",
+    cache: "no-store",
+  });
 }
 
 function syncMessagesWithProfileUpdate(previous: Message[], nextUser: PublicUser): Message[] {
@@ -744,6 +748,8 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
     () => (typeof navigator === "undefined" ? true : navigator.onLine),
   );
   const desktopShell = isDesktopShell();
+  const realtimeServerUrl = getRealtimeServerUrl();
+  const realtimeSocketPath = getRealtimeSocketPath();
 
   const selectedConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
@@ -1832,9 +1838,36 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
 
   useEffect(() => {
     let mounted = true;
+    let refreshingSocketAuth = false;
+    let socketAuthRefreshAttempts = 0;
+
+    async function refreshSocketToken(socket: SocketClient) {
+      if (!mounted || refreshingSocketAuth || socketAuthRefreshAttempts >= 1) {
+        return;
+      }
+
+      refreshingSocketAuth = true;
+      socketAuthRefreshAttempts += 1;
+
+      try {
+        const nextToken = await fetchRealtimeToken();
+        if (!mounted || socketRef.current !== socket) {
+          return;
+        }
+
+        socket.auth = {
+          realtimeToken: nextToken.realtimeToken,
+        };
+        socket.connect();
+      } catch {
+        setSocketConnected(false);
+      } finally {
+        refreshingSocketAuth = false;
+      }
+    }
 
     async function initSocket() {
-      if (shouldDisableRealtimeSocket()) {
+      if (!realtimeServerUrl) {
         setSocketConnected(false);
         return;
       }
@@ -1847,21 +1880,18 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
       }
 
       try {
-        await fetchJson<{ ok: boolean }>("/api/socket", {
-          method: "GET",
-          cache: "no-store",
-        });
+        const realtimeTokenResponse = await fetchRealtimeToken();
 
         if (!mounted) {
           return;
         }
 
-        const socket = io({
-          path: "/api/socket/io",
+        const socket = io(realtimeServerUrl, {
+          autoConnect: false,
+          path: realtimeSocketPath,
           auth: {
-            pinUnlockToken,
+            realtimeToken: realtimeTokenResponse.realtimeToken,
           },
-          withCredentials: true,
           transports: ["websocket", "polling"],
           reconnectionAttempts: 3,
           timeout: 5_000,
@@ -1869,6 +1899,7 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
         socketRef.current = socket;
 
         socket.on("connect", () => {
+          socketAuthRefreshAttempts = 0;
           setSocketConnected(true);
         });
 
@@ -1881,6 +1912,11 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
           if (isPinAccessErrorCode(error.message)) {
             clearStoredPinUnlockToken();
             dispatchPinLock();
+            return;
+          }
+
+          if (isRealtimeTokenRefreshErrorCode(error.message)) {
+            void refreshSocketToken(socket);
           }
         });
 
@@ -1933,6 +1969,8 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
           setMessages((previous) => updateMessageStatusLocally(previous, payload));
           setConversations((previous) => updateConversationStatusLocally(previous, payload));
         });
+
+        socket.connect();
       } catch {
         setSocketConnected(false);
       }
@@ -1953,6 +1991,8 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
     desktopShell,
     isConversationActivelyViewed,
     loadConversations,
+    realtimeServerUrl,
+    realtimeSocketPath,
     showDesktopNotification,
   ]);
 

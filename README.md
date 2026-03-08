@@ -1,36 +1,89 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# SecretChat
 
-## Getting Started
+SecretChat is a private 1:1 chat application with:
 
-First, run the development server:
+- Next.js for the main web app
+- Electron for the desktop shell
+- PostgreSQL + Prisma for persistence
+- Socket.IO as a standalone realtime service for chat events
+
+## Architecture
+
+- `Next.js app`: authentication, PIN unlock, conversations, messages, uploads
+- `Standalone realtime server`: Socket.IO signaling and message delivery/read events
+- `Electron desktop app`: wraps the hosted Next.js app for desktop-only features
+
+The intended production deployment is:
+
+- `Vercel` for the Next.js frontend and HTTP APIs
+- `Render` or a `VPS` for the standalone realtime server
+
+## Local Development
+
+Start the Next.js app:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Build the standalone realtime server:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm run realtime:build
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Start the standalone realtime server:
 
-## Learn More
+```bash
+npm run realtime:start
+```
 
-To learn more about Next.js, take a look at the following resources:
+## Required Environment Variables
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Shared
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `DATABASE_URL`
+- `AUTH_JWT_SECRET`
+- `INVITE_CODE`
 
-## Deploy on Vercel
+### Web App
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- `PUBLIC_BASE_URL`
+- `NEXT_PUBLIC_REALTIME_URL`
+- `NEXT_PUBLIC_REALTIME_SOCKET_PATH` optional, defaults to `/socket.io`
+- `NEXT_APP_URL` for the Electron wrapper target URL
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Standalone Realtime Server
+
+- `REALTIME_PORT` optional, defaults to `3001`
+- `PORT` supported automatically for Render
+- `REALTIME_HOST` optional, defaults to `0.0.0.0`
+- `REALTIME_SOCKET_PATH` optional, defaults to `/socket.io`
+- `REALTIME_CORS_ORIGIN` optional comma-separated origin list
+- `REALTIME_AUTH_JWT_SECRET` optional, falls back to `AUTH_JWT_SECRET`
+- `REALTIME_TOKEN_TTL_SECONDS` optional, defaults to `3600`
+
+If `REALTIME_CORS_ORIGIN` is not set, the realtime server falls back to `PUBLIC_BASE_URL`, `NEXT_APP_URL`, and local development origins.
+
+## Render Deployment
+
+Only the standalone realtime service should be deployed on Render.
+
+- Keep the Next.js app on Vercel.
+- Create a Render Web Service from this repo.
+- Set the service root directory to `chat-app`.
+- Use `npm ci && npm run realtime:build` as the build command.
+- Use `npm run realtime:start` as the start command.
+- Set health check path to `/healthz`.
+
+If you use Render Blueprints, the repo root [render.yaml](c:/Coding/sec-chat/render.yaml) already defines the realtime service only.
+
+## Realtime Auth Flow
+
+1. User signs in to the Next.js app.
+2. User unlocks chat with PIN.
+3. Client requests `POST /api/realtime/token`.
+4. Next.js returns a signed short-lived realtime token.
+5. Client connects directly to the standalone Socket.IO server using that token.
+
+This avoids cookie-sharing problems between Vercel and Render/VPS.

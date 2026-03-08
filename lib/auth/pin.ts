@@ -3,7 +3,7 @@ import {
   PIN_UNLOCK_HEADER_NAME,
   PIN_UNLOCK_QUERY_PARAM,
   PIN_UNLOCK_TTL_SECONDS,
-} from "@/lib/auth/constants";
+} from "./constants";
 
 export const PIN_LENGTH = 6;
 export const PIN_REGEX = /^\d{6}$/;

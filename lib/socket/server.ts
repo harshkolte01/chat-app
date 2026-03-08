@@ -1,14 +1,12 @@
 import type { Server as HttpServer } from "node:http";
 import { Server as SocketIOServer, Socket } from "socket.io";
-import { AUTH_COOKIE_NAME } from "@/lib/auth/constants";
-import { verifySessionToken } from "@/lib/auth/jwt";
-import { isValidPinUnlockForUser } from "@/lib/auth/pin";
 import {
   applyConversationReadState,
   getConversationForMember,
   resolveReadTimestamp,
-} from "@/lib/chat/read-state";
-import { prisma } from "@/lib/db";
+} from "../chat/read-state";
+import { prisma } from "../db";
+import { verifyRealtimeToken } from "../realtime/token";
 import {
   ChatMessageStatusUpdatedEvent,
   ChatNewMessageEvent,
@@ -24,7 +22,7 @@ import {
   SocketMessage,
   SocketPublicUser,
   SocketReplyMessage,
-} from "@/lib/socket/contracts";
+} from "./contracts";
 
 type SocketServer = SocketIOServer<ClientToServerEvents, ServerToClientEvents, object, SocketData>;
 type AuthenticatedSocket = Socket<
@@ -35,10 +33,23 @@ type AuthenticatedSocket = Socket<
 >;
 
 const MESSAGE_TEXT_LIMIT = 4000;
-const DELIVERY_ACK_TIMEOUT_MS = Number(process.env.SOCKET_DELIVERY_ACK_TIMEOUT_MS ?? 10_000);
 const pendingDeliveryAcks = new Map<string, NodeJS.Timeout>();
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return Math.floor(parsed);
+}
+
+const DELIVERY_ACK_TIMEOUT_MS = parsePositiveInteger(
+  process.env.SOCKET_DELIVERY_ACK_TIMEOUT_MS,
+  10_000,
+);
 
 function isUuid(value: string): boolean {
   return UUID_PATTERN.test(value);
@@ -76,28 +87,6 @@ function ackError<T>(
   });
 }
 
-function parseCookie(header: string): Record<string, string> {
-  return header
-    .split(";")
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .reduce<Record<string, string>>((result, part) => {
-      const separatorIndex = part.indexOf("=");
-      if (separatorIndex <= 0) {
-        return result;
-      }
-
-      const name = part.slice(0, separatorIndex).trim();
-      const value = part.slice(separatorIndex + 1).trim();
-      if (!name) {
-        return result;
-      }
-
-      result[name] = decodeURIComponent(value);
-      return result;
-    }, {});
-}
-
 function parseIncomingMessageType(type: SendMessagePayload["type"]): ChatMessageType | null {
   const normalized = String(type ?? "").trim().toUpperCase();
   if (normalized === "TEXT" || normalized === "IMAGE") {
@@ -130,13 +119,13 @@ function userRoom(userId: string): string {
   return `user:${userId}`;
 }
 
-function getSocketPinUnlockToken(socket: AuthenticatedSocket): string | null {
+function getSocketRealtimeToken(socket: AuthenticatedSocket): string | null {
   const authPayload =
     typeof socket.handshake.auth === "object" && socket.handshake.auth !== null
       ? socket.handshake.auth
       : null;
 
-  const token = authPayload && "pinUnlockToken" in authPayload ? authPayload.pinUnlockToken : null;
+  const token = authPayload && "realtimeToken" in authPayload ? authPayload.realtimeToken : null;
   return typeof token === "string" && token.trim() ? token.trim() : null;
 }
 
@@ -467,21 +456,18 @@ async function handleMessageRead(
 export function registerSocketHandlers(io: SocketServer) {
   io.use(async (socket, next) => {
     try {
-      const cookieHeader = socket.handshake.headers.cookie ?? "";
-      const cookies = parseCookie(cookieHeader);
-      const token = cookies[AUTH_COOKIE_NAME];
-
-      if (!token) {
+      const realtimeToken = getSocketRealtimeToken(socket);
+      if (!realtimeToken) {
         return next(new Error("UNAUTHORIZED"));
       }
 
-      const session = verifySessionToken(token);
-      if (!session) {
-        return next(new Error("UNAUTHORIZED"));
+      const verification = verifyRealtimeToken(realtimeToken);
+      if (!verification.ok) {
+        return next(new Error(verification.code));
       }
 
       const user = await prisma.user.findUnique({
-        where: { id: session.sub },
+        where: { id: verification.payload.sub },
         select: {
           id: true,
           username: true,
@@ -500,8 +486,7 @@ export function registerSocketHandlers(io: SocketServer) {
         return next(new Error("PIN_SETUP_REQUIRED"));
       }
 
-      const pinUnlockToken = getSocketPinUnlockToken(socket);
-      if (!isValidPinUnlockForUser(user, pinUnlockToken)) {
+      if (verification.payload.pinVersion !== user.pinVersion) {
         return next(new Error("PIN_UNLOCK_REQUIRED"));
       }
 
@@ -552,25 +537,29 @@ export function registerSocketHandlers(io: SocketServer) {
   });
 }
 
-declare global {
-  var __socketIoServer: SocketServer | undefined;
-}
-
-export function getOrCreateSocketServer(server: HttpServer): SocketServer {
-  if (globalThis.__socketIoServer) {
-    return globalThis.__socketIoServer;
-  }
-
+export function createSocketServer(
+  server: HttpServer,
+  options?: {
+    path?: string;
+    corsOrigin?: string[];
+  },
+): SocketServer {
   const io = new SocketIOServer<ClientToServerEvents, ServerToClientEvents, object, SocketData>(
     server,
     {
-      path: "/api/socket/io",
+      path: options?.path ?? "/socket.io",
       serveClient: false,
       transports: ["websocket", "polling"],
+      cors:
+        options?.corsOrigin && options.corsOrigin.length > 0
+          ? {
+              origin: options.corsOrigin,
+              credentials: false,
+            }
+          : undefined,
     },
   );
 
   registerSocketHandlers(io);
-  globalThis.__socketIoServer = io;
   return io;
 }

@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
-import { fail, ok } from "@/lib/api/responses";
-import { getCurrentUserFromRequest, serializePublicUser } from "@/lib/auth/current-user";
+import { ok } from "@/lib/api/responses";
+import { serializePublicUser } from "@/lib/auth/current-user";
+import { requirePinUnlockedApiUser } from "@/lib/auth/pin-access";
 import { prisma } from "@/lib/db";
 
 function normalizeEmail(email: string): string {
@@ -8,10 +9,11 @@ function normalizeEmail(email: string): string {
 }
 
 export async function GET(request: NextRequest) {
-  const currentUser = await getCurrentUserFromRequest(request);
-  if (!currentUser) {
-    return fail(401, "UNAUTHORIZED", "Authentication required.");
+  const auth = await requirePinUnlockedApiUser(request);
+  if (auth.response) {
+    return auth.response;
   }
+  const currentUser = auth.user;
 
   const emailParam =
     request.nextUrl.searchParams.get("email") ?? request.nextUrl.searchParams.get("query");

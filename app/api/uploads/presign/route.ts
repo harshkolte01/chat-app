@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { fail, ok, parseJsonBody } from "@/lib/api/responses";
-import { getCurrentUserFromRequest } from "@/lib/auth/current-user";
+import { requirePinUnlockedApiUser } from "@/lib/auth/pin-access";
 import { createImageObjectKey, createPresignedPutUrl, toPublicObjectProxyUrl } from "@/lib/storage/s3";
 
 type PresignBody = {
@@ -12,9 +12,9 @@ const MAX_FILENAME_LENGTH = 180;
 const ALLOWED_CONTENT_TYPE_PREFIX = "image/";
 
 export async function POST(request: NextRequest) {
-  const currentUser = await getCurrentUserFromRequest(request);
-  if (!currentUser) {
-    return fail(401, "UNAUTHORIZED", "Authentication required.");
+  const auth = await requirePinUnlockedApiUser(request);
+  if (auth.response) {
+    return auth.response;
   }
 
   const body = await parseJsonBody<PresignBody>(request);

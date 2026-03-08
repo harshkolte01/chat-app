@@ -1,15 +1,15 @@
 import { NextRequest } from "next/server";
 import { fail, ok } from "@/lib/api/responses";
-import { getCurrentUserFromRequest } from "@/lib/auth/current-user";
+import { requirePinUnlockedApiUser } from "@/lib/auth/pin-access";
 import { createImageObjectKey, createPresignedPutUrl, toPublicObjectProxyUrl } from "@/lib/storage/s3";
 
 const ALLOWED_CONTENT_TYPE_PREFIX = "image/";
 const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024;
 
 export async function POST(request: NextRequest) {
-  const currentUser = await getCurrentUserFromRequest(request);
-  if (!currentUser) {
-    return fail(401, "UNAUTHORIZED", "Authentication required.");
+  const auth = await requirePinUnlockedApiUser(request);
+  if (auth.response) {
+    return auth.response;
   }
 
   const formData = await request.formData().catch(() => null);

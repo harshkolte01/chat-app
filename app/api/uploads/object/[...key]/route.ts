@@ -1,4 +1,6 @@
+import { NextRequest } from "next/server";
 import { fail } from "@/lib/api/responses";
+import { requirePinUnlockedApiUser } from "@/lib/auth/pin-access";
 import { createPresignedGetUrl } from "@/lib/storage/s3";
 
 type RouteContext = {
@@ -8,7 +10,12 @@ type RouteContext = {
 const PROXY_CACHE_SECONDS = 60;
 const PRESIGNED_GET_SECONDS = 120;
 
-export async function GET(_: Request, context: RouteContext) {
+export async function GET(request: NextRequest, context: RouteContext) {
+  const auth = await requirePinUnlockedApiUser(request);
+  if (auth.response) {
+    return auth.response;
+  }
+
   const params = await Promise.resolve(context.params);
   const keyParts = params.key ?? [];
   const objectKey = keyParts.join("/").trim();
@@ -53,7 +60,7 @@ export async function GET(_: Request, context: RouteContext) {
     }
   }
 
-  headers.set("cache-control", `public, max-age=${PROXY_CACHE_SECONDS}`);
+  headers.set("cache-control", `private, max-age=${PROXY_CACHE_SECONDS}`);
 
   return new Response(upstream.body, {
     status: 200,

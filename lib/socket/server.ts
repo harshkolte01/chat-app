@@ -2,6 +2,7 @@ import type { Server as HttpServer } from "node:http";
 import { Server as SocketIOServer, Socket } from "socket.io";
 import { AUTH_COOKIE_NAME } from "@/lib/auth/constants";
 import { verifySessionToken } from "@/lib/auth/jwt";
+import { isValidPinUnlockForUser } from "@/lib/auth/pin";
 import {
   applyConversationReadState,
   getConversationForMember,
@@ -127,6 +128,16 @@ function registerPendingDeliveryAck(messageId: string) {
 
 function userRoom(userId: string): string {
   return `user:${userId}`;
+}
+
+function getSocketPinUnlockToken(socket: AuthenticatedSocket): string | null {
+  const authPayload =
+    typeof socket.handshake.auth === "object" && socket.handshake.auth !== null
+      ? socket.handshake.auth
+      : null;
+
+  const token = authPayload && "pinUnlockToken" in authPayload ? authPayload.pinUnlockToken : null;
+  return typeof token === "string" && token.trim() ? token.trim() : null;
 }
 
 type SocketReplySource = {
@@ -476,11 +487,22 @@ export function registerSocketHandlers(io: SocketServer) {
           username: true,
           email: true,
           createdAt: true,
+          pinHash: true,
+          pinVersion: true,
         },
       });
 
       if (!user) {
         return next(new Error("UNAUTHORIZED"));
+      }
+
+      if (!user.pinHash) {
+        return next(new Error("PIN_SETUP_REQUIRED"));
+      }
+
+      const pinUnlockToken = getSocketPinUnlockToken(socket);
+      if (!isValidPinUnlockForUser(user, pinUnlockToken)) {
+        return next(new Error("PIN_UNLOCK_REQUIRED"));
       }
 
       socket.data.user = {

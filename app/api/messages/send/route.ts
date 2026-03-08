@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { fail, ok, parseJsonBody } from "@/lib/api/responses";
-import { getCurrentUserFromRequest, serializePublicUser } from "@/lib/auth/current-user";
+import { serializePublicUser } from "@/lib/auth/current-user";
+import { requirePinUnlockedApiUser } from "@/lib/auth/pin-access";
 import { isConversationMember } from "@/lib/chat/membership";
 import { prisma } from "@/lib/db";
 
@@ -22,10 +23,11 @@ function isUuid(value: string): boolean {
 }
 
 export async function POST(request: NextRequest) {
-  const currentUser = await getCurrentUserFromRequest(request);
-  if (!currentUser) {
-    return fail(401, "UNAUTHORIZED", "Authentication required.");
+  const auth = await requirePinUnlockedApiUser(request);
+  if (auth.response) {
+    return auth.response;
   }
+  const currentUser = auth.user;
 
   const body = await parseJsonBody<SendMessageBody>(request);
   if (!body) {

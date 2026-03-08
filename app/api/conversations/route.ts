@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { fail, ok, parseJsonBody } from "@/lib/api/responses";
-import { getCurrentUserFromRequest } from "@/lib/auth/current-user";
+import { requirePinUnlockedApiUser } from "@/lib/auth/pin-access";
 import { listConversationSummaries } from "@/lib/chat/conversation-summaries";
 import { prisma } from "@/lib/db";
 
@@ -25,20 +25,22 @@ function isUniqueConstraintError(error: unknown): boolean {
 }
 
 export async function GET(request: NextRequest) {
-  const currentUser = await getCurrentUserFromRequest(request);
-  if (!currentUser) {
-    return fail(401, "UNAUTHORIZED", "Authentication required.");
+  const auth = await requirePinUnlockedApiUser(request);
+  if (auth.response) {
+    return auth.response;
   }
+  const currentUser = auth.user;
 
   const conversations = await listConversationSummaries(currentUser.id);
   return ok({ conversations });
 }
 
 export async function POST(request: NextRequest) {
-  const currentUser = await getCurrentUserFromRequest(request);
-  if (!currentUser) {
-    return fail(401, "UNAUTHORIZED", "Authentication required.");
+  const auth = await requirePinUnlockedApiUser(request);
+  if (auth.response) {
+    return auth.response;
   }
+  const currentUser = auth.user;
 
   const body = await parseJsonBody<CreateConversationBody>(request);
   if (!body) {

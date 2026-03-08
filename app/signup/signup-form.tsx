@@ -4,6 +4,7 @@ import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BrandMark } from "@/components/BrandMark";
+import { clearStoredPinUnlockToken } from "@/lib/auth/pin-client";
 
 type SignupResponse = {
   user: {
@@ -65,6 +66,7 @@ export function SignupForm() {
         accessCode: accessCode.trim(),
       });
 
+      clearStoredPinUnlockToken();
       router.push("/chat");
       router.refresh();
     } catch (submitError) {

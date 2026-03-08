@@ -3,6 +3,7 @@
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BrandMark } from "@/components/BrandMark";
+import { clearStoredPinUnlockToken } from "@/lib/auth/pin-client";
 
 type LoginResponse = {
   user: {
@@ -55,6 +56,7 @@ export function LoginForm() {
 
     try {
       await login(email.trim(), password);
+      clearStoredPinUnlockToken();
       router.push("/chat");
       router.refresh();
     } catch (submitError) {

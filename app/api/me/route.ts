@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fail, ok, parseJsonBody } from "@/lib/api/responses";
-import { getCurrentUserFromRequest, serializePublicUser } from "@/lib/auth/current-user";
+import { serializePublicUser } from "@/lib/auth/current-user";
+import { requirePinUnlockedApiUser } from "@/lib/auth/pin-access";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { setSessionCookie } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
@@ -21,10 +22,11 @@ function normalizeEmail(email: string): string {
 }
 
 export async function GET(request: NextRequest) {
-  const user = await getCurrentUserFromRequest(request);
-  if (!user) {
-    return fail(401, "UNAUTHORIZED", "Authentication required.");
+  const auth = await requirePinUnlockedApiUser(request);
+  if (auth.response) {
+    return auth.response;
   }
+  const user = auth.user;
 
   return ok({
     user: serializePublicUser(user),
@@ -32,10 +34,11 @@ export async function GET(request: NextRequest) {
 }
 
 export async function PATCH(request: NextRequest) {
-  const currentUser = await getCurrentUserFromRequest(request);
-  if (!currentUser) {
-    return fail(401, "UNAUTHORIZED", "Authentication required.");
+  const auth = await requirePinUnlockedApiUser(request);
+  if (auth.response) {
+    return auth.response;
   }
+  const currentUser = auth.user;
 
   const body = await parseJsonBody<UpdateProfileBody>(request);
   if (!body) {

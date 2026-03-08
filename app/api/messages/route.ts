@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { fail, ok } from "@/lib/api/responses";
-import { getCurrentUserFromRequest, serializePublicUser } from "@/lib/auth/current-user";
+import { serializePublicUser } from "@/lib/auth/current-user";
+import { requirePinUnlockedApiUser } from "@/lib/auth/pin-access";
 import { isConversationMember } from "@/lib/chat/membership";
 import { prisma } from "@/lib/db";
 
@@ -35,10 +36,11 @@ type MessageRecord = {
 };
 
 export async function GET(request: NextRequest) {
-  const currentUser = await getCurrentUserFromRequest(request);
-  if (!currentUser) {
-    return fail(401, "UNAUTHORIZED", "Authentication required.");
+  const auth = await requirePinUnlockedApiUser(request);
+  if (auth.response) {
+    return auth.response;
   }
+  const currentUser = auth.user;
 
   const conversationId = request.nextUrl.searchParams.get("conversationId")?.trim();
   const cursor = request.nextUrl.searchParams.get("cursor")?.trim() ?? null;

@@ -9,6 +9,13 @@ const publicUserSelect = {
   createdAt: true,
 } as const;
 
+const authenticatedUserSelect = {
+  ...publicUserSelect,
+  pinHash: true,
+  pinVersion: true,
+  pinUpdatedAt: true,
+} as const;
+
 export type PublicUser = {
   id: string;
   username: string;
@@ -21,6 +28,12 @@ export type PublicUserDbShape = {
   username: string;
   email: string;
   createdAt: Date;
+};
+
+export type AuthenticatedUserDbShape = PublicUserDbShape & {
+  pinHash: string | null;
+  pinVersion: number;
+  pinUpdatedAt: Date | null;
 };
 
 export function serializePublicUser(user: PublicUserDbShape): PublicUser {
@@ -36,6 +49,13 @@ async function findPublicUserById(userId: string): Promise<PublicUserDbShape | n
   return prisma.user.findUnique({
     where: { id: userId },
     select: publicUserSelect,
+  });
+}
+
+async function findAuthenticatedUserById(userId: string): Promise<AuthenticatedUserDbShape | null> {
+  return prisma.user.findUnique({
+    where: { id: userId },
+    select: authenticatedUserSelect,
   });
 }
 
@@ -57,4 +77,24 @@ export async function getCurrentUserFromCookies(): Promise<PublicUserDbShape | n
   }
 
   return findPublicUserById(session.sub);
+}
+
+export async function getCurrentAuthenticatedUserFromRequest(
+  request: NextRequest,
+): Promise<AuthenticatedUserDbShape | null> {
+  const session = getSessionFromRequest(request);
+  if (!session) {
+    return null;
+  }
+
+  return findAuthenticatedUserById(session.sub);
+}
+
+export async function getCurrentAuthenticatedUserFromCookies(): Promise<AuthenticatedUserDbShape | null> {
+  const session = await getSessionFromServerCookies();
+  if (!session) {
+    return null;
+  }
+
+  return findAuthenticatedUserById(session.sub);
 }

@@ -13,6 +13,14 @@ import {
 import { useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
 import { PublicUser } from "@/lib/auth/current-user";
+import {
+  appendPinUnlockQuery,
+  clearStoredPinUnlockToken,
+  dispatchPinLock,
+  isPinAccessErrorCode,
+  getStoredPinUnlockToken,
+  withPinProtectedRequestInit,
+} from "@/lib/auth/pin-client";
 import { BrandMark } from "@/components/BrandMark";
 import { Composer } from "@/components/chat/Composer";
 import { getDesktopBridge, isDesktopShell } from "@/lib/desktop-bridge";
@@ -127,6 +135,13 @@ type CameraFacingMode = "user" | "environment";
 
 type SocketClient = Socket<ServerToClientEvents, ClientToServerEvents>;
 
+type ApiErrorPayload = {
+  error?: {
+    code?: string;
+    message?: string;
+  };
+};
+
 const SOCKET_ACK_TIMEOUT_MS = 8_000;
 const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024;
 const POLL_MESSAGES_INTERVAL_MS = 2_500;
@@ -182,17 +197,17 @@ function normalizeMessageImageUrl(imageKey: string): string {
   }
 
   if (trimmed.startsWith("/api/uploads/object/")) {
-    return trimmed;
+    return appendPinUnlockQuery(trimmed);
   }
 
   if (trimmed.startsWith("chat-images/")) {
-    return `/api/uploads/object/${encodeObjectKeyForProxy(trimmed)}`;
+    return appendPinUnlockQuery(`/api/uploads/object/${encodeObjectKeyForProxy(trimmed)}`);
   }
 
   if (trimmed.startsWith("/")) {
     const objectKey = extractObjectKeyFromPathname(trimmed);
     if (objectKey) {
-      return `/api/uploads/object/${encodeObjectKeyForProxy(objectKey)}`;
+      return appendPinUnlockQuery(`/api/uploads/object/${encodeObjectKeyForProxy(objectKey)}`);
     }
     return trimmed;
   }
@@ -202,12 +217,12 @@ function normalizeMessageImageUrl(imageKey: string): string {
       const parsed = new URL(trimmed);
 
       if (parsed.pathname.startsWith("/api/uploads/object/")) {
-        return parsed.pathname;
+        return appendPinUnlockQuery(parsed.pathname);
       }
 
       const objectKey = extractObjectKeyFromPathname(parsed.pathname);
       if (objectKey) {
-        return `/api/uploads/object/${encodeObjectKeyForProxy(objectKey)}`;
+        return appendPinUnlockQuery(`/api/uploads/object/${encodeObjectKeyForProxy(objectKey)}`);
       }
     } catch {
       return trimmed;
@@ -261,13 +276,17 @@ function mergeLatestMessages(previous: Message[], latest: Message[]): Message[] 
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+  const response = await fetch(url, withPinProtectedRequestInit(init));
   const payload = await response.json().catch(() => null);
 
   if (!response.ok) {
-    const errorMessage =
-      (payload as { error?: { message?: string } } | null)?.error?.message ??
-      "Request failed.";
+    const errorCode = (payload as ApiErrorPayload | null)?.error?.code ?? null;
+    if (isPinAccessErrorCode(errorCode)) {
+      clearStoredPinUnlockToken();
+      dispatchPinLock();
+    }
+
+    const errorMessage = (payload as ApiErrorPayload | null)?.error?.message ?? "Request failed.";
     throw new Error(errorMessage);
   }
 
@@ -1106,15 +1125,23 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
       const formData = new FormData();
       formData.set("file", file, file.name || `upload-${Date.now()}.jpg`);
 
-      const response = await fetch("/api/uploads/relay", {
-        method: "POST",
-        body: formData,
-      });
+      const response = await fetch(
+        "/api/uploads/relay",
+        withPinProtectedRequestInit({
+          method: "POST",
+          body: formData,
+        }),
+      );
       const payload = await response.json().catch(() => null);
       if (!response.ok) {
+        const errorCode = (payload as ApiErrorPayload | null)?.error?.code ?? null;
+        if (isPinAccessErrorCode(errorCode)) {
+          clearStoredPinUnlockToken();
+          dispatchPinLock();
+        }
+
         const message =
-          (payload as { error?: { message?: string } } | null)?.error?.message ??
-          "Image upload failed.";
+          (payload as ApiErrorPayload | null)?.error?.message ?? "Image upload failed.";
         throw new Error(message);
       }
 
@@ -1543,6 +1570,8 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
       void desktop.stopFlashWindow();
     }
 
+    clearStoredPinUnlockToken();
+
     try {
       await fetchJson("/api/auth/logout", { method: "POST" });
     } finally {
@@ -1810,6 +1839,13 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
         return;
       }
 
+      const pinUnlockToken = getStoredPinUnlockToken();
+      if (!pinUnlockToken) {
+        setSocketConnected(false);
+        dispatchPinLock();
+        return;
+      }
+
       try {
         await fetchJson<{ ok: boolean }>("/api/socket", {
           method: "GET",
@@ -1822,6 +1858,9 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
 
         const socket = io({
           path: "/api/socket/io",
+          auth: {
+            pinUnlockToken,
+          },
           withCredentials: true,
           transports: ["websocket", "polling"],
           reconnectionAttempts: 3,
@@ -1837,8 +1876,12 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
           setSocketConnected(false);
         });
 
-        socket.on("connect_error", () => {
+        socket.on("connect_error", (error) => {
           setSocketConnected(false);
+          if (isPinAccessErrorCode(error.message)) {
+            clearStoredPinUnlockToken();
+            dispatchPinLock();
+          }
         });
 
         socket.on("chat:new_message", (payload) => {

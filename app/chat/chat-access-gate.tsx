@@ -225,7 +225,7 @@ export function ChatAccessGate({
       <section className="relative mx-auto flex min-h-[calc(100vh-3rem)] w-full max-w-6xl items-center justify-center">
         <div className="grid w-full gap-6 lg:grid-cols-[1.05fr_0.95fr]">
           <div className="hidden rounded-[34px] border border-white/70 bg-[linear-gradient(160deg,rgba(255,255,255,0.78),rgba(255,250,238,0.64))] p-8 shadow-[0_30px_80px_rgba(17,17,17,0.08)] backdrop-blur md:block lg:p-10">
-            <BrandMark priority subtitle="Private messaging with a second local lock." />
+            <BrandMark subtitle="Private messaging with a second local lock." />
             <div className="mt-10 space-y-5">
               <p className="inline-flex rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-amber-800">
                 Session shield

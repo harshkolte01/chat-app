@@ -411,6 +411,23 @@ function SettingsIcon({ className = "h-4 w-4" }: { className?: string }) {
   );
 }
 
+function SignalTower({ connected }: { connected: boolean }) {
+  const color = connected ? "#16a34a" : "#dc2626";
+  const label = connected ? "Socket connected" : "Polling fallback active";
+  return (
+    <div
+      aria-label={label}
+      title={label}
+      className="flex items-end gap-0.75"
+      style={{ height: 20 }}
+    >
+      <span className="w-1 rounded-sm transition-colors duration-500" style={{ height: 8, backgroundColor: color }} />
+      <span className="w-1 rounded-sm transition-colors duration-500" style={{ height: 13, backgroundColor: color }} />
+      <span className="w-1 rounded-sm transition-colors duration-500" style={{ height: 20, backgroundColor: color }} />
+    </div>
+  );
+}
+
 function toPublicUser(user: SocketPublicUser): PublicUser {
   return {
     id: user.id,
@@ -2072,15 +2089,18 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
           messagePanelFullscreen ? "hidden" : ""
         }`}
       >
-        <BrandMark size="sm" priority />
-        <button
-          type="button"
-          onClick={openProfilePanel}
-          aria-label="Open settings"
-          className="inline-flex items-center justify-center rounded-xl border border-stone-300 bg-white p-2.5 text-black transition hover:bg-stone-100"
-        >
-          <SettingsIcon className="h-5 w-5" />
-        </button>
+        <BrandMark size="sm" />
+        <div className="flex items-center gap-3">
+          <SignalTower connected={socketConnected} />
+          <button
+            type="button"
+            onClick={openProfilePanel}
+            aria-label="Open settings"
+            className="inline-flex items-center justify-center rounded-xl border border-stone-300 bg-white p-2.5 text-black transition hover:bg-stone-100"
+          >
+            <SettingsIcon className="h-5 w-5" />
+          </button>
+        </div>
       </header>
 
       {/* Main content — flush, no padding */}

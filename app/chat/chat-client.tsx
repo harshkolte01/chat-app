@@ -2065,43 +2065,30 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
   }, [selectedConversationId, newestMessageId]);
 
   return (
-    <div className="h-screen overflow-hidden px-3 py-4 sm:px-5 sm:py-6 lg:px-8 lg:py-8">
-      <div className="mx-auto flex h-full w-full max-w-7xl flex-col gap-4 overflow-hidden">
-        <header
-          className={`flex flex-col gap-3 rounded-2xl border border-stone-200 bg-white px-4 py-4 shadow-[0_14px_34px_rgba(17,17,17,0.06)] sm:flex-row sm:items-start sm:justify-between sm:px-5 ${
-            messagePanelFullscreen ? "hidden" : ""
-          }`}
+    <div className="flex h-screen flex-col overflow-hidden">
+      {/* Top navbar — flush to the top edge */}
+      <header
+        className={`flex shrink-0 items-center justify-between border-b border-stone-200 bg-white px-4 py-3 shadow-[0_4px_16px_rgba(17,17,17,0.06)] sm:px-6 ${
+          messagePanelFullscreen ? "hidden" : ""
+        }`}
+      >
+        <BrandMark size="sm" priority />
+        <button
+          type="button"
+          onClick={openProfilePanel}
+          aria-label="Open settings"
+          className="inline-flex items-center justify-center rounded-xl border border-stone-300 bg-white p-2.5 text-black transition hover:bg-stone-100"
         >
-          <div>
-            <BrandMark size="sm" priority subtitle="Private workspace" />
-            <p className="mt-3 text-sm text-black/70">
-              Signed in as {accountUser.username} ({accountUser.email})
-            </p>
-            <p className="text-xs font-medium uppercase tracking-wide text-black/55">
-              Realtime: {realtimeStatus}
-            </p>
-          </div>
-          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
-            <button
-              type="button"
-              onClick={openProfilePanel}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-semibold text-black transition hover:bg-stone-100 sm:w-auto"
-            >
-              <SettingsIcon />
-              Settings
-            </button>
-            <button
-              type="button"
-              onClick={onLogout}
-              className="w-full rounded-xl border border-stone-300 bg-amber-100 px-3 py-2 text-sm font-semibold text-black transition hover:bg-amber-200 sm:w-auto"
-            >
-              Logout
-            </button>
-          </div>
-        </header>
+          <SettingsIcon className="h-5 w-5" />
+        </button>
+      </header>
+
+      {/* Main content — flush, no padding */}
+      <div className="min-h-0 flex-1 overflow-hidden">
+      <div className="flex h-full w-full flex-col overflow-hidden">
 
         {error ? (
-          <div className="rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+          <div className="shrink-0 border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
             {error}
           </div>
         ) : null}
@@ -2110,11 +2097,11 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
           className={
             messagePanelFullscreen
               ? "min-h-0 flex-1"
-              : "grid min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[320px_minmax(0,1fr)]"
+              : "grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[20%_minmax(0,1fr)]"
           }
         >
           {!messagePanelFullscreen ? (
-            <aside className="flex min-h-0 flex-col rounded-2xl border border-stone-200 bg-white p-4 shadow-[0_14px_34px_rgba(17,17,17,0.05)]">
+            <aside className={`min-h-0 flex-col border-r border-stone-200 bg-white p-4 ${selectedConversationId ? "hidden md:flex" : "flex"}`}>
             <div className="mb-4 rounded-xl border border-stone-200 bg-stone-50 p-3">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-black">
                 Start private chat
@@ -2266,16 +2253,31 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
           ) : null}
 
           <section
-            className={`flex min-h-0 flex-col overflow-hidden rounded-2xl border border-stone-200 bg-white p-4 shadow-[0_14px_34px_rgba(17,17,17,0.05)] sm:p-5 ${
-              messagePanelFullscreen ? "fixed inset-2 z-40 sm:inset-4" : ""
-            }`}
+            className={`min-h-0 flex-col overflow-hidden bg-white p-4 sm:p-5 ${
+              !selectedConversationId && !messagePanelFullscreen ? "hidden md:flex" : "flex"
+            } ${messagePanelFullscreen ? "fixed inset-0 z-40" : ""}`}
           >
             <div className="mb-3 flex items-center justify-between gap-3 border-b border-stone-200 pb-3">
-              <h2 className="text-lg font-semibold text-black">
-                {selectedConversation
-                  ? `${selectedConversation.otherUser.username}`
-                  : "No chat selected"}
-              </h2>
+              <div className="flex min-w-0 items-center gap-2">
+                {selectedConversation ? (
+                  <button
+                    type="button"
+                    onClick={closeConversation}
+                    aria-label="Back to conversations"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-stone-300 bg-stone-50 px-2.5 py-1.5 text-xs font-semibold text-black transition hover:bg-stone-100 md:hidden"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
+                      <path d="M15 18l-6-6 6-6" />
+                    </svg>
+                    Back
+                  </button>
+                ) : null}
+                <h2 className="truncate text-lg font-semibold text-black">
+                  {selectedConversation
+                    ? `${selectedConversation.otherUser.username}`
+                    : "No chat selected"}
+                </h2>
+              </div>
               <div className="flex items-center gap-2">
                 {desktopShell ? (
                   <>
@@ -2463,14 +2465,23 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
                         current password before changing it.
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={closeProfilePanel}
-                      disabled={savingProfile}
-                      className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-100 sm:w-auto"
-                    >
-                      Close
-                    </button>
+                    <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+                      <button
+                        type="button"
+                        onClick={onLogout}
+                        className="w-full rounded-xl border border-stone-300 bg-amber-100 px-3 py-2 text-sm font-semibold text-black transition hover:bg-amber-200 sm:w-auto"
+                      >
+                        Logout
+                      </button>
+                      <button
+                        type="button"
+                        onClick={closeProfilePanel}
+                        disabled={savingProfile}
+                        className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-semibold text-black transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:bg-stone-100 sm:w-auto"
+                      >
+                        Close
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -2764,6 +2775,7 @@ export function ChatClient({ currentUser: initialCurrentUser }: { currentUser: P
           onStartScreenShare={callController.startScreenShare}
           onStopScreenShare={callController.stopScreenShare}
         />
+      </div>
       </div>
     </div>
   );
